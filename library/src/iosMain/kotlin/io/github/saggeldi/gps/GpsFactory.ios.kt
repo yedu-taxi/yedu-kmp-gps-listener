@@ -25,4 +25,8 @@ actual object GpsFactory {
     actual fun createRetryScheduler(): RetryScheduler {
         return IosRetryScheduler()
     }
+
+    actual fun createLocationPermissionHelper(): LocationPermissionHelper {
+        return IosLocationPermissionHelper()
+    }
 }

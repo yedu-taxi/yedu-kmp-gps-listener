@@ -22,6 +22,7 @@ expect object GpsFactory {
     fun createPositionSender(): PositionSender
     fun createNetworkMonitor(): NetworkMonitor
     fun createRetryScheduler(): RetryScheduler
+    fun createLocationPermissionHelper(): LocationPermissionHelper
 }
 
 fun GpsFactory.createGpsTracker(listener: GpsTrackerListener): GpsTracker {

@@ -54,4 +54,8 @@ actual object GpsFactory {
     actual fun createRetryScheduler(): RetryScheduler {
         return AndroidRetryScheduler()
     }
+
+    actual fun createLocationPermissionHelper(): LocationPermissionHelper {
+        return AndroidLocationPermissionHelper(requireContext())
+    }
 }

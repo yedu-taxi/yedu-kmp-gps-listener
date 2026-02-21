@@ -12,6 +12,7 @@ A **headless** (no UI) Kotlin Multiplatform library that provides background GPS
 - **Network monitoring** with automatic send on reconnect
 - **TrackingController** - full state machine (write -> read -> send -> delete -> retry)
 - **ProtocolFormatter** - OsmAnd/Traccar-compatible URL formatting
+- **Location permission helpers** - check, request, and open settings (cross-platform)
 - Callback-based API (no coroutines dependency)
 - All configuration passed dynamically at runtime
 
@@ -21,7 +22,7 @@ A **headless** (no UI) Kotlin Multiplatform library that provides background GPS
 
 ```kotlin
 dependencies {
-    implementation("io.github.saggeldi:yedu-kmp-gps-listener:0.0.3")
+    implementation("io.github.saggeldi:yedu-kmp-gps-listener:0.0.4")
 }
 ```
 
@@ -29,7 +30,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'io.github.saggeldi:yedu-kmp-gps-listener:0.0.3'
+    implementation 'io.github.saggeldi:yedu-kmp-gps-listener:0.0.4'
 }
 ```
 
@@ -340,6 +341,7 @@ tracker.stop()
 | Object | `GpsFactory` | `expect/actual` factory. Call `initialize(context)` on Android first |
 | Extension | `GpsFactory.createGpsTracker(listener)` | Create GPS-only tracker from common code |
 | Extension | `GpsFactory.createTrackingController(serverUrl, ...)` | Create full pipeline from common code |
+| Method | `GpsFactory.createLocationPermissionHelper()` | Create permission/location-state helper |
 
 ### Core GPS
 
@@ -352,6 +354,8 @@ tracker.stop()
 | Data class | `BatteryStatus` | Battery `level` (0-100) and `charging` state |
 | Enum | `LocationAccuracy` | `HIGH`, `MEDIUM`, `LOW` |
 | Enum | `TrackerStatus` | `STARTED`, `STOPPED` |
+| Interface | `LocationPermissionHelper` | Check/request permissions, query GPS state, open settings |
+| Enum | `PermissionStatus` | `GRANTED`, `DENIED`, `NOT_DETERMINED`, `RESTRICTED` |
 
 ### Full Pipeline
 
@@ -375,6 +379,7 @@ tracker.stop()
 | Position Sender | `AndroidPositionSender()` | `IosPositionSender()` |
 | Network Monitor | `AndroidNetworkMonitor(context)` | `IosNetworkMonitor()` |
 | Retry Scheduler | `AndroidRetryScheduler()` | `IosRetryScheduler()` |
+| Permission Helper | `AndroidLocationPermissionHelper(context)` | `IosLocationPermissionHelper()` |
 
 ### Position Fields
 
@@ -398,6 +403,84 @@ Positions are formatted as OsmAnd/Traccar-compatible URL query parameters:
 
 ```
 https://server:5055?id=DEVICE_ID&timestamp=EPOCH&lat=LAT&lon=LON&speed=SPEED&bearing=COURSE&altitude=ALT&accuracy=ACC&batt=LEVEL&charge=true&mock=true
+```
+
+---
+
+## Location Permission & GPS State
+
+Use `LocationPermissionHelper` to check/request location permissions and query GPS state from common code.
+
+### Check permissions and GPS state
+
+```kotlin
+val permissionHelper = GpsFactory.createLocationPermissionHelper()
+
+// Check current permission status
+when (permissionHelper.checkPermissionStatus()) {
+    PermissionStatus.GRANTED        -> println("Permission granted")
+    PermissionStatus.DENIED         -> println("Permission denied")
+    PermissionStatus.NOT_DETERMINED -> println("Permission not yet requested")
+    PermissionStatus.RESTRICTED     -> println("Permission restricted by policy")
+}
+
+// Check background permission specifically
+if (permissionHelper.hasBackgroundPermission()) { /* always-on tracking OK */ }
+
+// Check if device GPS is enabled
+if (!permissionHelper.isLocationEnabled()) {
+    permissionHelper.openLocationSettings()  // prompt user to enable GPS
+}
+```
+
+### Request permission
+
+```kotlin
+permissionHelper.requestPermission(background = false) { status ->
+    println("Result: $status")
+}
+
+// Request background (always) permission
+permissionHelper.requestPermission(background = true) { status ->
+    println("Background result: $status")
+}
+```
+
+### Open settings
+
+```kotlin
+permissionHelper.openLocationSettings()  // device GPS settings
+permissionHelper.openAppSettings()       // app permission settings
+```
+
+### Android-specific setup
+
+On Android, permission requesting requires an Activity. Without calling `setActivity()`, `requestPermission()` returns the current status without showing a dialog.
+
+```kotlin
+// In your Activity
+val helper = GpsFactory.createLocationPermissionHelper()
+    as AndroidLocationPermissionHelper
+
+helper.setActivity(this)
+
+helper.requestPermission(background = true) { status ->
+    // handle result
+}
+
+// Relay the result from your Activity
+override fun onRequestPermissionsResult(
+    requestCode: Int, permissions: Array<String>, grantResults: IntArray
+) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    helper.onRequestPermissionsResult(requestCode, permissions, grantResults)
+}
+
+// Clear when Activity is destroyed
+override fun onDestroy() {
+    helper.clearActivity()
+    super.onDestroy()
+}
 ```
 
 ---
