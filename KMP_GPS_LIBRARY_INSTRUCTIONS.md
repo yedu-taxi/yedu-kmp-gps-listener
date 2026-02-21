@@ -1,6 +1,6 @@
-# KMP GPS Background Tracking Library - Implementation Guide
+# KMP GPS Background Listener Library - Implementation Guide
 
-> Convert Traccar Android (Kotlin) + iOS (Swift) GPS tracking into a single Kotlin Multiplatform library.
+> A pure GPS background listener library. Native side only collects locations and notifies KMP listeners. The consumer app decides what to do with positions (send to server, store, etc.).
 
 ---
 
@@ -13,7 +13,7 @@
 5. [Step 3: Android Implementation (androidMain)](#step-3-android-implementation-androidmain)
 6. [Step 4: iOS Implementation (iosMain)](#step-4-ios-implementation-iosmain)
 7. [Step 5: Platform Configuration & Permissions](#step-5-platform-configuration--permissions)
-8. [Step 6: Integration Guide for Consumers](#step-6-integration-guide-for-consumers)
+8. [Step 6: Consumer Integration Examples](#step-6-consumer-integration-examples)
 9. [Step 7: Testing](#step-7-testing)
 10. [API Reference](#api-reference)
 11. [Component Mapping Table](#component-mapping-table)
@@ -26,55 +26,84 @@
 ### What This Library Does
 
 A **headless** (no UI) Kotlin Multiplatform library that provides:
-- Background GPS location tracking
-- Offline position buffering (SQLite/CoreData)
-- HTTP position reporting to a server
-- Network connectivity monitoring with auto-retry
-- Battery status reporting
-- Configurable interval/distance/angle filtering
+- Background GPS location listening on Android and iOS
+- Position filtering by interval, distance, and angle
+- Battery status reporting alongside each position
+- KMP-side listeners that consumers subscribe to for receiving positions
+- All configuration passed dynamically at runtime from KMP side
 
 ### What This Library Does NOT Do
 
+- No server communication (no HTTP, no URL formatting, no retry logic)
+- No local database or position buffering
 - No UI components (no settings screens, no widgets)
-- No foreground service management (the **consuming app** must manage this on Android)
-- No permission request dialogs (the **consuming app** must request permissions)
+- No foreground service management (consumer's responsibility on Android)
+- No permission request dialogs (consumer's responsibility)
 - No notification management
 
-### Architecture Pattern: expect/actual
+> **Design principle:** Native platform code only collects GPS data and notifies KMP listeners. The consumer decides what to do with positions - send to a server, store in a database, display on a map, etc.
+
+### Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────┐
-│              commonMain                      │
-│                                              │
-│  TrackingConfig (data class)                 │
-│  Position (data class)                       │
-│  BatteryStatus (data class)                  │
-│  TrackingListener (interface)                │
-│  ProtocolFormatter (object)                  │
-│  DistanceCalculator (object)                 │
-│                                              │
-│  expect class PlatformPositionProvider       │
-│  expect class PlatformDatabaseHelper         │
-│  expect class PlatformNetworkMonitor         │
-│  expect class PlatformHttpClient             │
-│  expect class PlatformBatteryProvider        │
-│                                              │
-│  TrackingController (shared orchestrator)    │
-│                                              │
-└──────────────┬──────────────┬────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    CONSUMER APP                           │
+│                                                           │
+│  Creates GpsTracker with config                          │
+│  Subscribes to GpsTrackerListener                        │
+│  Receives Position objects                                │
+│  ↓ Does whatever it wants:                               │
+│    • Send to server (HTTP, WebSocket, etc.)              │
+│    • Store in local DB                                    │
+│    • Show on map                                          │
+│    • Log / analytics                                      │
+└──────────────┬───────────────────────────────────────────┘
+               │ calls start(config) / stop()
+               │ receives onPositionUpdate(), onError()
+┌──────────────▼───────────────────────────────────────────┐
+│                   commonMain (KMP)                        │
+│                                                           │
+│  GpsTracker            ← Main entry point                │
+│  GpsTrackerListener    ← Callback interface              │
+│  GpsConfig             ← Dynamic configuration           │
+│  Position              ← Data class (lat, lon, speed...) │
+│  BatteryStatus         ← Data class (level, charging)    │
+│  LocationAccuracy      ← Enum (HIGH, MEDIUM, LOW)        │
+│  DistanceCalculator    ← Haversine formula (filtering)   │
+│                                                           │
+│  interface PlatformLocationProvider   ← abstraction       │
+│  interface PlatformBatteryProvider    ← abstraction       │
+│                                                           │
+└──────────────┬──────────────┬────────────────────────────┘
                │              │
     ┌──────────▼──────┐  ┌────▼───────────────┐
     │   androidMain   │  │     iosMain        │
     │                 │  │                     │
-    │  actual class   │  │  actual class       │
-    │  PlatformXxx    │  │  PlatformXxx        │
+    │ AndroidLocation │  │ IosLocationProvider │
+    │   Provider      │  │                     │
+    │                 │  │ CLLocationManager   │
+    │ LocationManager │  │ + significant loc   │
+    │ + battery API   │  │ + UIDevice battery  │
     │                 │  │                     │
-    │  LocationManager│  │  CLLocationManager  │
-    │  SQLiteDatabase │  │  CoreData (via      │
-    │  ConnectivityMgr│  │    cinterop/manual) │
-    │  HttpURLConn    │  │  NSURLSession       │
-    │  BatteryManager │  │  UIDevice.battery   │
+    │ ONLY collects   │  │ ONLY collects       │
+    │ GPS + battery   │  │ GPS + battery       │
+    │ and notifies    │  │ and notifies        │
+    │ KMP listener    │  │ KMP listener        │
     └─────────────────┘  └─────────────────────┘
+```
+
+### Data Flow
+
+```
+Native GPS hardware
+       ↓
+Platform LocationProvider (Android/iOS)
+       ↓ raw location
+GpsTracker.applyFilter()  ← interval/distance/angle check
+       ↓ filtered position
+GpsTrackerListener.onPositionUpdate(position)  ← KMP listener
+       ↓
+Consumer app receives Position and does whatever it wants
 ```
 
 ---
@@ -90,42 +119,33 @@ library/
     ├── commonMain/
     │   └── kotlin/
     │       └── org/traccar/kmp/
-    │           ├── TrackingController.kt       # Main orchestrator (shared logic)
-    │           ├── TrackingListener.kt          # Callback interface for consumers
-    │           ├── TrackingConfig.kt            # Configuration data class
-    │           ├── Position.kt                  # Position data class
-    │           ├── BatteryStatus.kt             # Battery data class
-    │           ├── ProtocolFormatter.kt         # URL formatting (pure Kotlin)
-    │           ├── DistanceCalculator.kt        # Haversine formula (pure Kotlin)
-    │           ├── PlatformPositionProvider.kt  # expect declaration
-    │           ├── PlatformDatabaseHelper.kt    # expect declaration
-    │           ├── PlatformNetworkMonitor.kt    # expect declaration
-    │           ├── PlatformHttpClient.kt        # expect declaration
-    │           └── PlatformBatteryProvider.kt   # expect declaration
+    │           ├── GpsTracker.kt                # Main entry point + filtering logic
+    │           ├── GpsTrackerListener.kt         # Callback interface for consumers
+    │           ├── GpsConfig.kt                  # Dynamic configuration data class
+    │           ├── Position.kt                   # Position data class
+    │           ├── BatteryStatus.kt              # Battery data class
+    │           ├── LocationAccuracy.kt           # Enum
+    │           ├── DistanceCalculator.kt         # Haversine formula (pure Kotlin)
+    │           ├── PlatformLocationProvider.kt   # Interface for platform GPS
+    │           └── PlatformBatteryProvider.kt    # Interface for platform battery
     │
     ├── androidMain/
     │   └── kotlin/
     │       └── org/traccar/kmp/
-    │           ├── AndroidPositionProvider.kt   # actual - LocationManager
-    │           ├── AndroidDatabaseHelper.kt     # actual - SQLiteOpenHelper
-    │           ├── AndroidNetworkMonitor.kt     # actual - ConnectivityManager
-    │           ├── AndroidHttpClient.kt         # actual - HttpURLConnection
-    │           └── AndroidBatteryProvider.kt    # actual - BatteryManager
+    │           ├── AndroidLocationProvider.kt    # LocationManager implementation
+    │           └── AndroidBatteryProvider.kt     # BatteryManager implementation
     │
     ├── iosMain/
     │   └── kotlin/
     │       └── org/traccar/kmp/
-    │           ├── IosPositionProvider.kt       # actual - CLLocationManager
-    │           ├── IosDatabaseHelper.kt         # actual - NSUserDefaults/Files
-    │           ├── IosNetworkMonitor.kt         # actual - NWPathMonitor
-    │           ├── IosHttpClient.kt             # actual - NSURLSession
-    │           └── IosBatteryProvider.kt        # actual - UIDevice
+    │           ├── IosLocationProvider.kt        # CLLocationManager implementation
+    │           └── IosBatteryProvider.kt         # UIDevice battery implementation
     │
     ├── commonTest/
     │   └── kotlin/
     │       └── org/traccar/kmp/
-    │           ├── ProtocolFormatterTest.kt
-    │           └── DistanceCalculatorTest.kt
+    │           ├── DistanceCalculatorTest.kt
+    │           └── GpsTrackerFilterTest.kt
     │
     ├── androidHostTest/
     │   └── kotlin/
@@ -137,6 +157,13 @@ library/
             └── org/traccar/kmp/
                 └── IosIntegrationTest.kt
 ```
+
+> **Note:** Compared to the previous version, the following are REMOVED from the library:
+> - `ProtocolFormatter` (server URL formatting) - consumer's responsibility
+> - `PlatformDatabaseHelper` (position buffering) - consumer's responsibility
+> - `PlatformNetworkMonitor` (connectivity) - consumer's responsibility
+> - `PlatformHttpClient` (HTTP requests) - consumer's responsibility
+> - `TrackingController` state machine (write/read/send/delete/retry) - consumer's responsibility
 
 ---
 
@@ -151,13 +178,10 @@ kotlin = "2.2.20"
 android-minSdk = "24"
 android-compileSdk = "36"
 vanniktechMavenPublish = "0.34.0"
-kotlinxCoroutines = "1.10.2"
 kotlinxDatetime = "0.6.2"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
-kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
-kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
 
 [plugins]
@@ -165,6 +189,8 @@ android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 vanniktech-mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "vanniktechMavenPublish" }
 ```
+
+> **Note:** No coroutines dependency needed. The library is callback-based. No HTTP/network/database dependencies either.
 
 ### 1.2 Update `library/build.gradle.kts`
 
@@ -196,35 +222,26 @@ kotlin {
     // Source sets
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
         }
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
-
-        // Android-specific dependencies
-        val androidMain by getting {
-            dependencies {
-                implementation(libs.kotlinx.coroutines.android)
-            }
-        }
     }
 }
 
-// Publishing config (customize for your artifact)
 mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
     coordinates(
         groupId = "io.github.yourorg",
-        artifactId = "kmp-gps-tracker",
+        artifactId = "kmp-gps-listener",
         version = "1.0.0"
     )
     pom {
-        name.set("KMP GPS Background Tracker")
-        description.set("Kotlin Multiplatform GPS background tracking library")
+        name.set("KMP GPS Background Listener")
+        description.set("Kotlin Multiplatform GPS background listener library")
     }
 }
 ```
@@ -235,10 +252,8 @@ mavenPublishing {
 
 ### 2.1 Position.kt - Data Model
 
-**Source from Android:** `Position.kt` (data class with deviceId, time, lat, lon, etc.)
-**Source from iOS:** `Position.swift` (CoreData entity with same fields)
-
-Both platforms share identical fields. Create a pure Kotlin data class:
+**Source from Android:** `Position.kt` fields
+**Source from iOS:** `Position.swift` fields
 
 ```kotlin
 // commonMain/kotlin/org/traccar/kmp/Position.kt
@@ -247,7 +262,6 @@ package org.traccar.kmp
 import kotlinx.datetime.Instant
 
 data class Position(
-    val id: Long = 0,
     val deviceId: String,
     val time: Instant,               // kotlinx-datetime for cross-platform
     val latitude: Double = 0.0,
@@ -256,13 +270,12 @@ data class Position(
     val speed: Double = 0.0,         // in knots (converted from m/s * 1.943844)
     val course: Double = 0.0,        // bearing 0-360 degrees
     val accuracy: Double = 0.0,      // horizontal accuracy in meters
-    val battery: Double = 0.0,       // 0-100%
-    val charging: Boolean = false,
-    val mock: Boolean = false        // Android only, false on iOS
+    val battery: BatteryStatus = BatteryStatus(),
+    val mock: Boolean = false        // Android only, always false on iOS
 )
 ```
 
-> **Key mapping:** Android converts `m/s * 1.943844` to knots in `Position(Location)` constructor. iOS does `location.speed * 1.94384`. Both do this at the **provider level** before creating Position.
+> **Key change:** `battery` is now embedded as a `BatteryStatus` object inside `Position`, not separate fields. This makes the listener callback simpler - one object contains everything.
 
 ### 2.2 BatteryStatus.kt
 
@@ -276,24 +289,11 @@ data class BatteryStatus(
 )
 ```
 
-### 2.3 TrackingConfig.kt
-
-Merge SharedPreferences keys (Android) and UserDefaults keys (iOS) into one config:
+### 2.3 LocationAccuracy.kt
 
 ```kotlin
-// commonMain/kotlin/org/traccar/kmp/TrackingConfig.kt
+// commonMain/kotlin/org/traccar/kmp/LocationAccuracy.kt
 package org.traccar.kmp
-
-data class TrackingConfig(
-    val deviceId: String,                        // KEY_DEVICE / device_id_preference
-    val serverUrl: String,                       // KEY_URL / server_url_preference
-    val interval: Long = 300,                    // seconds between updates (default 5 min)
-    val distance: Double = 0.0,                  // min meters to trigger update (0 = disabled)
-    val angle: Double = 0.0,                     // min bearing change degrees (0 = disabled)
-    val accuracy: LocationAccuracy = LocationAccuracy.MEDIUM,
-    val bufferEnabled: Boolean = true,           // offline buffering
-    val useWakeLock: Boolean = true              // Android only, ignored on iOS
-)
 
 enum class LocationAccuracy {
     HIGH,    // Android: GPS_PROVIDER,            iOS: kCLLocationAccuracyBest
@@ -302,56 +302,53 @@ enum class LocationAccuracy {
 }
 ```
 
-### 2.4 TrackingListener.kt - Consumer Callback Interface
+### 2.4 GpsConfig.kt - Dynamic Configuration
+
+All parameters are passed at runtime by the consumer. No hardcoded values, no SharedPreferences, no UserDefaults.
 
 ```kotlin
-// commonMain/kotlin/org/traccar/kmp/TrackingListener.kt
+// commonMain/kotlin/org/traccar/kmp/GpsConfig.kt
 package org.traccar.kmp
 
-interface TrackingListener {
-    fun onPositionUpdate(position: Position)
-    fun onPositionSent(position: Position, success: Boolean)
-    fun onError(error: String)
-    fun onStatusChange(message: String)           // "location update", "send ok", etc.
-}
+data class GpsConfig(
+    val deviceId: String,
+    val interval: Long = 300,                    // seconds between updates (default 5 min)
+    val distance: Double = 0.0,                  // min meters to trigger update (0 = disabled)
+    val angle: Double = 0.0,                     // min bearing change degrees (0 = disabled)
+    val accuracy: LocationAccuracy = LocationAccuracy.MEDIUM
+)
 ```
 
-### 2.5 ProtocolFormatter.kt - Pure Kotlin (Shared)
+> **What's removed vs old `TrackingConfig`:** No `serverUrl`, no `bufferEnabled`, no `useWakeLock`. The library doesn't know about servers or buffering. Wake lock is the consumer's responsibility.
 
-**Source from Android:** `ProtocolFormatter.kt` - formats URL query params
-**Source from iOS:** `ProtocolFormatter.swift` - identical logic
+### 2.5 GpsTrackerListener.kt - Consumer Callback Interface
 
-This is 100% shareable pure Kotlin. No platform deps needed:
+This is the **only way** the library communicates back to the consumer. Native GPS code feeds into this listener through the KMP layer.
 
 ```kotlin
-// commonMain/kotlin/org/traccar/kmp/ProtocolFormatter.kt
+// commonMain/kotlin/org/traccar/kmp/GpsTrackerListener.kt
 package org.traccar.kmp
 
-object ProtocolFormatter {
-    fun formatRequest(serverUrl: String, position: Position, alarm: String? = null): String {
-        val builder = StringBuilder(serverUrl)
-        builder.append(if (serverUrl.contains("?")) "&" else "?")
-        builder.append("id=").append(position.deviceId)
-        builder.append("&timestamp=").append(position.time.epochSeconds)
-        builder.append("&lat=").append(position.latitude)
-        builder.append("&lon=").append(position.longitude)
-        builder.append("&speed=").append(position.speed)
-        builder.append("&bearing=").append(position.course)
-        builder.append("&altitude=").append(position.altitude)
-        builder.append("&accuracy=").append(position.accuracy)
-        builder.append("&batt=").append(position.battery)
-        if (position.charging) builder.append("&charge=true")
-        if (position.mock) builder.append("&mock=true")
-        alarm?.let { builder.append("&alarm=").append(it) }
-        return builder.toString()
-    }
+interface GpsTrackerListener {
+    /** Called when a new filtered GPS position is available */
+    fun onPositionUpdate(position: Position)
+
+    /** Called when GPS provider encounters an error */
+    fun onError(error: String)
+
+    /** Called when tracker status changes (started, stopped) */
+    fun onStatusChange(status: TrackerStatus)
+}
+
+enum class TrackerStatus {
+    STARTED,
+    STOPPED
 }
 ```
 
 ### 2.6 DistanceCalculator.kt - Pure Kotlin (Shared)
 
-**Source from iOS:** `DistanceCalculator.swift` - Haversine formula
-**Android uses:** `Location.distanceTo()` but for cross-platform consistency, use Haversine:
+Used internally for distance-based position filtering.
 
 ```kotlin
 // commonMain/kotlin/org/traccar/kmp/DistanceCalculator.kt
@@ -359,7 +356,7 @@ package org.traccar.kmp
 
 import kotlin.math.*
 
-object DistanceCalculator {
+internal object DistanceCalculator {
     private const val EQUATORIAL_EARTH_RADIUS = 6378.1370 // km
     private val DEG_TO_RAD = PI / 180.0
 
@@ -374,174 +371,180 @@ object DistanceCalculator {
                 cos(fromLat * DEG_TO_RAD) * cos(toLat * DEG_TO_RAD) *
                 sin(dLon / 2).pow(2)
         val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return EQUATORIAL_EARTH_RADIUS * c * 1000.0 // km -> meters
+        return EQUATORIAL_EARTH_RADIUS * c * 1000.0
     }
 }
 ```
 
-### 2.7 Platform Expect Declarations
+### 2.7 PlatformLocationProvider.kt - Interface
+
+The abstraction for native GPS. Each platform implements this. The native code does NOT send data to a server - it only calls the `onLocation` callback.
 
 ```kotlin
-// commonMain/kotlin/org/traccar/kmp/PlatformPositionProvider.kt
+// commonMain/kotlin/org/traccar/kmp/PlatformLocationProvider.kt
 package org.traccar.kmp
 
-expect class PlatformPositionProvider {
-    fun startUpdates(config: TrackingConfig, onPosition: (Position) -> Unit, onError: (String) -> Unit)
+/**
+ * Platform-specific GPS location provider.
+ * Implementations ONLY collect GPS data and call onLocation/onError.
+ * They do NOT send data to any server or store it.
+ */
+interface PlatformLocationProvider {
+    /**
+     * Start receiving GPS updates.
+     * @param config GPS configuration (accuracy, interval hints)
+     * @param onLocation called with each raw GPS position (before filtering)
+     * @param onError called when location provider encounters an error
+     */
+    fun startUpdates(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit,
+        onError: (String) -> Unit
+    )
+
+    /** Stop receiving GPS updates and release resources */
     fun stopUpdates()
-    fun requestSingleLocation(config: TrackingConfig, onPosition: (Position) -> Unit)
+
+    /**
+     * Request a single immediate location reading.
+     * @param config GPS configuration
+     * @param onLocation called with the position
+     */
+    fun requestSingleLocation(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit
+    )
 }
 ```
 
-```kotlin
-// commonMain/kotlin/org/traccar/kmp/PlatformDatabaseHelper.kt
-package org.traccar.kmp
-
-expect class PlatformDatabaseHelper {
-    fun insertPosition(position: Position)
-    fun selectOldestPosition(): Position?
-    fun deletePosition(id: Long)
-    fun getCount(): Int
-}
-```
-
-```kotlin
-// commonMain/kotlin/org/traccar/kmp/PlatformNetworkMonitor.kt
-package org.traccar.kmp
-
-expect class PlatformNetworkMonitor {
-    fun start(onNetworkChange: (Boolean) -> Unit)
-    fun stop()
-    fun isOnline(): Boolean
-}
-```
-
-```kotlin
-// commonMain/kotlin/org/traccar/kmp/PlatformHttpClient.kt
-package org.traccar.kmp
-
-expect class PlatformHttpClient {
-    suspend fun sendRequest(url: String): Boolean
-}
-```
+### 2.8 PlatformBatteryProvider.kt - Interface
 
 ```kotlin
 // commonMain/kotlin/org/traccar/kmp/PlatformBatteryProvider.kt
 package org.traccar.kmp
 
-expect class PlatformBatteryProvider {
+/** Platform-specific battery info reader */
+interface PlatformBatteryProvider {
     fun getBatteryStatus(): BatteryStatus
 }
 ```
 
-### 2.8 TrackingController.kt - Shared Orchestrator
+### 2.9 GpsTracker.kt - Main Entry Point
 
-This is the **most important file**. It contains the shared state machine logic from both platforms.
-
-**Source from Android:** `TrackingController.kt` - the write/read/send/delete/retry cycle
-**Source from iOS:** `TrackingController.swift` - identical state machine
-
-The state machine is the same on both platforms:
-```
-Position arrives → write (if buffer) or send (if no buffer)
-write → read → send → delete → read (next)
-                  └→ retry (30s) → read → send
-Network comes online → read (flush buffer)
-```
+This is the **core class** consumers interact with. It:
+1. Receives raw GPS data from the native `PlatformLocationProvider`
+2. Applies interval/distance/angle filtering (shared logic from both Traccar clients)
+3. Notifies the `GpsTrackerListener` with filtered positions
+4. Does NOT send anything to any server
 
 ```kotlin
-// commonMain/kotlin/org/traccar/kmp/TrackingController.kt
+// commonMain/kotlin/org/traccar/kmp/GpsTracker.kt
 package org.traccar.kmp
 
-import kotlinx.coroutines.*
+import kotlin.math.abs
 
-class TrackingController(
-    private val config: TrackingConfig,
-    private val positionProvider: PlatformPositionProvider,
-    private val databaseHelper: PlatformDatabaseHelper,
-    private val networkMonitor: PlatformNetworkMonitor,
-    private val httpClient: PlatformHttpClient,
-    private val listener: TrackingListener? = null
+/**
+ * Main GPS background listener.
+ *
+ * Usage:
+ *   val tracker = GpsTracker(locationProvider, listener)
+ *   tracker.start(config)   // start listening with dynamic config
+ *   tracker.stop()          // stop listening
+ *   tracker.updateConfig(newConfig)  // change config at runtime
+ *
+ * The listener receives filtered Position objects.
+ * What you do with them (send to server, store, display) is up to you.
+ */
+class GpsTracker(
+    private val locationProvider: PlatformLocationProvider,
+    private val listener: GpsTrackerListener
 ) {
-    companion object {
-        private const val RETRY_DELAY_MS = 30_000L
-    }
-
-    private var online = false
-    private var waiting = false
-    private var stopped = true
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var config: GpsConfig? = null
     private var lastPosition: Position? = null
+    private var isRunning = false
 
-    fun start() {
-        stopped = false
-        online = networkMonitor.isOnline()
+    /** Start GPS listening with the given configuration */
+    fun start(config: GpsConfig) {
+        if (isRunning) stop()
 
-        // Start network monitoring
-        networkMonitor.start { isOnline ->
-            val wasOffline = !online
-            online = isOnline
-            listener?.onStatusChange(if (isOnline) "network online" else "network offline")
-            if (wasOffline && isOnline) {
-                read() // flush buffered positions
-            }
-        }
+        this.config = config
+        this.lastPosition = null
+        this.isRunning = true
 
-        // Start location updates
-        positionProvider.startUpdates(
+        locationProvider.startUpdates(
             config = config,
-            onPosition = { position ->
-                val filtered = applyFilter(position)
-                if (filtered) {
-                    lastPosition = position
-                    listener?.onPositionUpdate(position)
-                    if (config.bufferEnabled) {
-                        write(position)
-                    } else {
-                        send(position)
-                    }
-                }
+            onLocation = { position ->
+                handleRawPosition(position)
             },
             onError = { error ->
-                listener?.onError(error)
+                listener.onError(error)
             }
         )
 
-        // If online, flush any previously buffered positions
-        if (online) {
-            read()
-        }
-
-        listener?.onStatusChange("service created")
+        listener.onStatusChange(TrackerStatus.STARTED)
     }
 
+    /** Stop GPS listening and release resources */
     fun stop() {
-        stopped = true
-        positionProvider.stopUpdates()
-        networkMonitor.stop()
-        scope.cancel()
-        listener?.onStatusChange("service destroyed")
+        if (!isRunning) return
+        isRunning = false
+        locationProvider.stopUpdates()
+        listener.onStatusChange(TrackerStatus.STOPPED)
     }
 
-    fun sendSingleLocation(alarm: String? = null) {
-        positionProvider.requestSingleLocation(config) { position ->
-            val url = ProtocolFormatter.formatRequest(config.serverUrl, position, alarm)
-            scope.launch {
-                val success = httpClient.sendRequest(url)
-                listener?.onPositionSent(position, success)
-            }
+    /** Update configuration at runtime without restarting */
+    fun updateConfig(newConfig: GpsConfig) {
+        val wasRunning = isRunning
+        if (wasRunning) {
+            locationProvider.stopUpdates()
+        }
+        this.config = newConfig
+        if (wasRunning) {
+            locationProvider.startUpdates(
+                config = newConfig,
+                onLocation = { position -> handleRawPosition(position) },
+                onError = { error -> listener.onError(error) }
+            )
         }
     }
 
-    // --- Position Filtering (from PositionProvider.processLocation on both platforms) ---
+    /** Request a single immediate location reading */
+    fun requestSingleLocation() {
+        val cfg = config ?: return
+        locationProvider.requestSingleLocation(cfg) { position ->
+            listener.onPositionUpdate(position)
+        }
+    }
 
-    private fun applyFilter(position: Position): Boolean {
-        val last = lastPosition ?: return true // first position always passes
+    /** Check if tracker is currently running */
+    fun isTracking(): Boolean = isRunning
 
-        // Time filter
-        val elapsed = position.time.epochSeconds - last.time.epochSeconds
-        if (elapsed >= config.interval) return true
+    /** Get the current configuration (null if never started) */
+    fun currentConfig(): GpsConfig? = config
 
-        // Distance filter
+    // --- Internal: Position Filtering ---
+    // Source: PositionProvider.processLocation (Android) and
+    //         PositionProvider.locationManager:didUpdateLocations (iOS)
+    // Both platforms use identical filtering logic.
+
+    private fun handleRawPosition(position: Position) {
+        val cfg = config ?: return
+        if (!isRunning) return
+
+        if (shouldAcceptPosition(position, cfg)) {
+            lastPosition = position
+            listener.onPositionUpdate(position)
+        }
+    }
+
+    private fun shouldAcceptPosition(position: Position, config: GpsConfig): Boolean {
+        val last = lastPosition ?: return true  // first position always accepted
+
+        // Time filter: accept if enough time has passed
+        val elapsedSeconds = position.time.epochSeconds - last.time.epochSeconds
+        if (elapsedSeconds >= config.interval) return true
+
+        // Distance filter: accept if moved far enough (0 = disabled)
         if (config.distance > 0) {
             val dist = DistanceCalculator.distance(
                 last.latitude, last.longitude,
@@ -550,81 +553,12 @@ class TrackingController(
             if (dist >= config.distance) return true
         }
 
-        // Angle filter
+        // Angle filter: accept if bearing changed enough (0 = disabled)
         if (config.angle > 0) {
-            if (kotlin.math.abs(position.course - last.course) >= config.angle) return true
+            if (abs(position.course - last.course) >= config.angle) return true
         }
 
-        return false
-    }
-
-    // --- State Machine (identical on Android & iOS) ---
-
-    private fun write(position: Position) {
-        try {
-            databaseHelper.insertPosition(position)
-            listener?.onStatusChange("write")
-            if (online && waiting) {
-                read()
-                waiting = false
-            }
-        } catch (e: Exception) {
-            listener?.onError("write error: ${e.message}")
-        }
-    }
-
-    private fun read() {
-        if (stopped) return
-        val position = databaseHelper.selectOldestPosition()
-        if (position != null) {
-            if (position.deviceId == config.deviceId) {
-                listener?.onStatusChange("read")
-                send(position)
-            } else {
-                // Stale position from different device config, discard
-                databaseHelper.deletePosition(position.id)
-                read()
-            }
-        } else {
-            waiting = true
-        }
-    }
-
-    private fun send(position: Position) {
-        if (stopped) return
-        val url = ProtocolFormatter.formatRequest(config.serverUrl, position)
-        scope.launch {
-            val success = httpClient.sendRequest(url)
-            listener?.onPositionSent(position, success)
-            if (config.bufferEnabled) {
-                if (success) {
-                    delete(position)
-                } else {
-                    retry()
-                }
-            }
-        }
-    }
-
-    private fun delete(position: Position) {
-        try {
-            databaseHelper.deletePosition(position.id)
-            listener?.onStatusChange("delete")
-            read() // process next buffered position
-        } catch (e: Exception) {
-            listener?.onError("delete error: ${e.message}")
-            retry()
-        }
-    }
-
-    private fun retry() {
-        listener?.onStatusChange("retry in ${RETRY_DELAY_MS / 1000}s")
-        scope.launch {
-            delay(RETRY_DELAY_MS)
-            if (!stopped && online) {
-                read()
-            }
-        }
+        return false  // filtered out
     }
 }
 ```
@@ -633,12 +567,14 @@ class TrackingController(
 
 ## Step 3: Android Implementation (androidMain)
 
-### 3.1 AndroidPositionProvider.kt
+### 3.1 AndroidLocationProvider.kt
 
-**Source:** `AndroidPositionProvider.kt` - native LocationManager implementation
+**Source:** `AndroidPositionProvider.kt` + `PositionProvider.kt` from Traccar Android
+
+The Android implementation uses `LocationManager` to receive GPS updates and notifies the KMP callback. It does NOT send data anywhere.
 
 ```kotlin
-// androidMain/kotlin/org/traccar/kmp/AndroidPositionProvider.kt
+// androidMain/kotlin/org/traccar/kmp/AndroidLocationProvider.kt
 package org.traccar.kmp
 
 import android.annotation.SuppressLint
@@ -649,19 +585,30 @@ import android.location.LocationManager
 import android.os.Bundle
 import kotlinx.datetime.Clock
 
-actual class PlatformPositionProvider(private val context: Context) {
-    private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+/**
+ * Android GPS location provider.
+ * Only collects GPS data and notifies the KMP callback.
+ * Does NOT send data to any server.
+ *
+ * @param context Android Context (Activity or Service)
+ */
+class AndroidLocationProvider(
+    private val context: Context
+) : PlatformLocationProvider {
+
+    private val locationManager =
+        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val batteryProvider = AndroidBatteryProvider(context)
     private var locationListener: LocationListener? = null
-    private val batteryProvider = PlatformBatteryProvider(context)
 
     companion object {
-        private const val MINIMUM_INTERVAL = 1000L
+        private const val MINIMUM_INTERVAL_MS = 1000L
     }
 
     @SuppressLint("MissingPermission")
-    actual fun startUpdates(
-        config: TrackingConfig,
-        onPosition: (Position) -> Unit,
+    override fun startUpdates(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit,
         onError: (String) -> Unit
     ) {
         val provider = when (config.accuracy) {
@@ -670,8 +617,10 @@ actual class PlatformPositionProvider(private val context: Context) {
             LocationAccuracy.MEDIUM -> LocationManager.NETWORK_PROVIDER
         }
 
-        val minTime = if (config.distance > 0 || config.angle > 0) {
-            MINIMUM_INTERVAL
+        // If distance/angle filtering is active, request updates more frequently
+        // and let GpsTracker do the filtering. Otherwise use interval directly.
+        val minTimeMs = if (config.distance > 0 || config.angle > 0) {
+            MINIMUM_INTERVAL_MS
         } else {
             config.interval * 1000
         }
@@ -680,40 +629,52 @@ actual class PlatformPositionProvider(private val context: Context) {
             override fun onLocationChanged(location: Location) {
                 val battery = batteryProvider.getBatteryStatus()
                 val position = location.toPosition(config.deviceId, battery)
-                onPosition(position)
+                onLocation(position)  // notify KMP listener, nothing else
             }
             override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
             override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {
+                onError("Location provider disabled: $provider")
+            }
         }
 
         try {
             locationManager.requestLocationUpdates(
-                provider, minTime, 0f, locationListener!!
+                provider, minTimeMs, 0f, locationListener!!
             )
+        } catch (e: SecurityException) {
+            onError("Location permission not granted: ${e.message}")
         } catch (e: Exception) {
             onError("Location provider error: ${e.message}")
         }
     }
 
-    actual fun stopUpdates() {
-        locationListener?.let { locationManager.removeUpdates(it) }
+    override fun stopUpdates() {
+        locationListener?.let {
+            locationManager.removeUpdates(it)
+        }
         locationListener = null
     }
 
     @SuppressLint("MissingPermission")
-    actual fun requestSingleLocation(
-        config: TrackingConfig,
-        onPosition: (Position) -> Unit
+    override fun requestSingleLocation(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit
     ) {
-        val lastLocation = locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-        if (lastLocation != null) {
-            val battery = batteryProvider.getBatteryStatus()
-            onPosition(lastLocation.toPosition(config.deviceId, battery))
+        try {
+            val lastLocation =
+                locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+                    ?: locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (lastLocation != null) {
+                val battery = batteryProvider.getBatteryStatus()
+                onLocation(lastLocation.toPosition(config.deviceId, battery))
+            }
+        } catch (e: SecurityException) {
+            // permission not granted, silently ignore for single request
         }
     }
 
-    // Extension: convert Android Location -> KMP Position
+    // Convert Android Location -> KMP Position
     private fun Location.toPosition(deviceId: String, battery: BatteryStatus): Position {
         return Position(
             deviceId = deviceId,
@@ -721,16 +682,15 @@ actual class PlatformPositionProvider(private val context: Context) {
             latitude = latitude,
             longitude = longitude,
             altitude = altitude,
-            speed = speed * 1.943844,       // m/s -> knots
-            course = bearing.toDouble(),
-            accuracy = accuracy.toDouble(),
-            battery = battery.level,
-            charging = battery.charging,
-            mock = isMock()
+            speed = if (hasSpeed()) speed * 1.943844 else 0.0,  // m/s -> knots
+            course = if (hasBearing()) bearing.toDouble() else 0.0,
+            accuracy = if (hasAccuracy()) accuracy.toDouble() else 0.0,
+            battery = battery,
+            mock = isMockLocation()
         )
     }
 
-    private fun Location.isMock(): Boolean {
+    private fun Location.isMockLocation(): Boolean {
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             isMock
         } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR2) {
@@ -742,194 +702,9 @@ actual class PlatformPositionProvider(private val context: Context) {
 }
 ```
 
-### 3.2 AndroidDatabaseHelper.kt
+### 3.2 AndroidBatteryProvider.kt
 
-**Source:** `DatabaseHelper.kt` - SQLiteOpenHelper with position table
-
-```kotlin
-// androidMain/kotlin/org/traccar/kmp/AndroidDatabaseHelper.kt
-package org.traccar.kmp
-
-import android.content.ContentValues
-import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
-import kotlinx.datetime.Instant
-
-actual class PlatformDatabaseHelper(context: Context) :
-    SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
-
-    companion object {
-        private const val DATABASE_NAME = "kmp_tracker.db"
-        private const val DATABASE_VERSION = 1
-    }
-
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("""
-            CREATE TABLE position (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                deviceId TEXT,
-                time INTEGER,
-                latitude REAL,
-                longitude REAL,
-                altitude REAL,
-                speed REAL,
-                course REAL,
-                accuracy REAL,
-                battery REAL,
-                charging INTEGER,
-                mock INTEGER
-            )
-        """)
-    }
-
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS position")
-        onCreate(db)
-    }
-
-    actual fun insertPosition(position: Position) {
-        val values = ContentValues().apply {
-            put("deviceId", position.deviceId)
-            put("time", position.time.toEpochMilliseconds())
-            put("latitude", position.latitude)
-            put("longitude", position.longitude)
-            put("altitude", position.altitude)
-            put("speed", position.speed)
-            put("course", position.course)
-            put("accuracy", position.accuracy)
-            put("battery", position.battery)
-            put("charging", if (position.charging) 1 else 0)
-            put("mock", if (position.mock) 1 else 0)
-        }
-        writableDatabase.insert("position", null, values)
-    }
-
-    actual fun selectOldestPosition(): Position? {
-        val cursor = readableDatabase.rawQuery(
-            "SELECT * FROM position ORDER BY id ASC LIMIT 1", null
-        )
-        return cursor.use {
-            if (it.moveToFirst()) it.toPosition() else null
-        }
-    }
-
-    actual fun deletePosition(id: Long) {
-        writableDatabase.delete("position", "id = ?", arrayOf(id.toString()))
-    }
-
-    actual fun getCount(): Int {
-        val cursor = readableDatabase.rawQuery("SELECT COUNT(*) FROM position", null)
-        return cursor.use {
-            if (it.moveToFirst()) it.getInt(0) else 0
-        }
-    }
-
-    private fun android.database.Cursor.toPosition(): Position {
-        return Position(
-            id = getLong(getColumnIndexOrThrow("id")),
-            deviceId = getString(getColumnIndexOrThrow("deviceId")),
-            time = Instant.fromEpochMilliseconds(getLong(getColumnIndexOrThrow("time"))),
-            latitude = getDouble(getColumnIndexOrThrow("latitude")),
-            longitude = getDouble(getColumnIndexOrThrow("longitude")),
-            altitude = getDouble(getColumnIndexOrThrow("altitude")),
-            speed = getDouble(getColumnIndexOrThrow("speed")),
-            course = getDouble(getColumnIndexOrThrow("course")),
-            accuracy = getDouble(getColumnIndexOrThrow("accuracy")),
-            battery = getDouble(getColumnIndexOrThrow("battery")),
-            charging = getInt(getColumnIndexOrThrow("charging")) == 1,
-            mock = getInt(getColumnIndexOrThrow("mock")) == 1
-        )
-    }
-}
-```
-
-### 3.3 AndroidNetworkMonitor.kt
-
-**Source:** `NetworkManager.kt` - BroadcastReceiver for CONNECTIVITY_ACTION
-
-```kotlin
-// androidMain/kotlin/org/traccar/kmp/AndroidNetworkMonitor.kt
-package org.traccar.kmp
-
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
-
-actual class PlatformNetworkMonitor(private val context: Context) {
-    private var receiver: BroadcastReceiver? = null
-
-    actual fun start(onNetworkChange: (Boolean) -> Unit) {
-        receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                onNetworkChange(isOnline())
-            }
-        }
-        @Suppress("DEPRECATION")
-        context.registerReceiver(receiver, IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
-    }
-
-    actual fun stop() {
-        receiver?.let { context.unregisterReceiver(it) }
-        receiver = null
-    }
-
-    actual fun isOnline(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } else {
-            @Suppress("DEPRECATION")
-            val info = cm.activeNetworkInfo
-            return info?.isConnectedOrConnecting == true
-        }
-    }
-}
-```
-
-### 3.4 AndroidHttpClient.kt
-
-**Source:** `RequestManager.kt` - HttpURLConnection POST
-
-```kotlin
-// androidMain/kotlin/org/traccar/kmp/AndroidHttpClient.kt
-package org.traccar.kmp
-
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
-
-actual class PlatformHttpClient {
-    companion object {
-        private const val TIMEOUT = 15_000
-    }
-
-    actual suspend fun sendRequest(url: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.readTimeout = TIMEOUT
-            connection.connectTimeout = TIMEOUT
-            connection.requestMethod = "POST"
-            connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-}
-```
-
-### 3.5 AndroidBatteryProvider.kt
-
-**Source:** `PositionProvider.kt` method `getBatteryStatus()`
+**Source:** `PositionProvider.kt` method `getBatteryStatus()` from Traccar Android
 
 ```kotlin
 // androidMain/kotlin/org/traccar/kmp/AndroidBatteryProvider.kt
@@ -940,9 +715,17 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 
-actual class PlatformBatteryProvider(private val context: Context) {
-    actual fun getBatteryStatus(): BatteryStatus {
-        val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+/**
+ * Android battery status reader.
+ */
+class AndroidBatteryProvider(
+    private val context: Context
+) : PlatformBatteryProvider {
+
+    override fun getBatteryStatus(): BatteryStatus {
+        val batteryIntent = context.registerReceiver(
+            null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        )
         if (batteryIntent != null) {
             val level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0)
             val scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 1)
@@ -958,61 +741,75 @@ actual class PlatformBatteryProvider(private val context: Context) {
 }
 ```
 
+> **That's it for Android.** Only 2 files. No database, no HTTP client, no network monitor.
+
 ---
 
 ## Step 4: iOS Implementation (iosMain)
 
-> **Critical:** iOS implementations use Kotlin/Native interop with Apple frameworks.
-> Import `platform.CoreLocation.*`, `platform.Foundation.*`, `platform.UIKit.*`.
+> iOS implementations use Kotlin/Native interop with Apple frameworks.
 
-### 4.1 IosPositionProvider.kt
+### 4.1 IosLocationProvider.kt
 
-**Source:** `PositionProvider.swift` - CLLocationManager with background updates
+**Source:** `PositionProvider.swift` + `TrackingController.swift` from Traccar iOS
+
+The iOS implementation uses `CLLocationManager` with background updates + significant location changes. It only notifies the KMP callback.
 
 ```kotlin
-// iosMain/kotlin/org/traccar/kmp/IosPositionProvider.kt
+// iosMain/kotlin/org/traccar/kmp/IosLocationProvider.kt
 package org.traccar.kmp
 
 import kotlinx.datetime.toKotlinInstant
 import platform.CoreLocation.*
-import platform.Foundation.NSDate
 import platform.UIKit.UIDevice
+import platform.UIKit.UIDeviceBatteryStateCharging
+import platform.UIKit.UIDeviceBatteryStateFull
 import platform.darwin.NSObject
 
-actual class PlatformPositionProvider {
+/**
+ * iOS GPS location provider.
+ * Only collects GPS data and notifies the KMP callback.
+ * Does NOT send data to any server.
+ *
+ * Uses CLLocationManager + significant location changes for reliable background tracking.
+ */
+class IosLocationProvider : PlatformLocationProvider {
+
     private var locationManager: CLLocationManager? = null
     private var delegate: LocationDelegate? = null
 
-    actual fun startUpdates(
-        config: TrackingConfig,
-        onPosition: (Position) -> Unit,
+    override fun startUpdates(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit,
         onError: (String) -> Unit
     ) {
         val manager = CLLocationManager()
         locationManager = manager
 
-        // Configure accuracy (maps to iOS accuracy constants)
+        // Configure accuracy
         manager.desiredAccuracy = when (config.accuracy) {
             LocationAccuracy.HIGH -> kCLLocationAccuracyBest
             LocationAccuracy.MEDIUM -> kCLLocationAccuracyHundredMeters
             LocationAccuracy.LOW -> kCLLocationAccuracyKilometer
         }
 
+        // Critical for background tracking
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = true
 
-        delegate = LocationDelegate(config, onPosition, onError)
+        // Set up delegate (only notifies KMP callback)
+        delegate = LocationDelegate(config.deviceId, onLocation, onError)
         manager.delegate = delegate
 
-        // Request permission if needed
+        // Request always-on permission
         manager.requestAlwaysAuthorization()
 
-        // Start updates
+        // Start continuous + significant location monitoring
         manager.startUpdatingLocation()
         manager.startMonitoringSignificantLocationChanges()
     }
 
-    actual fun stopUpdates() {
+    override fun stopUpdates() {
         locationManager?.stopUpdatingLocation()
         locationManager?.stopMonitoringSignificantLocationChanges()
         locationManager?.delegate = null
@@ -1020,49 +817,59 @@ actual class PlatformPositionProvider {
         delegate = null
     }
 
-    actual fun requestSingleLocation(
-        config: TrackingConfig,
-        onPosition: (Position) -> Unit
+    override fun requestSingleLocation(
+        config: GpsConfig,
+        onLocation: (Position) -> Unit
     ) {
         locationManager?.location?.let { location ->
-            val battery = getBatteryStatus()
-            onPosition(location.toPosition(config.deviceId, battery))
+            val battery = IosBatteryProvider().getBatteryStatus()
+            onLocation(location.toPosition(config.deviceId, battery))
         }
     }
 
+    /**
+     * CLLocationManager delegate.
+     * Receives raw GPS updates from iOS and forwards to KMP callback.
+     * Does NOT send data to any server.
+     */
     private class LocationDelegate(
-        private val config: TrackingConfig,
-        private val onPosition: (Position) -> Unit,
+        private val deviceId: String,
+        private val onLocation: (Position) -> Unit,
         private val onError: (String) -> Unit
     ) : NSObject(), CLLocationManagerDelegateProtocol {
 
-        override fun locationManager(manager: CLLocationManager, didUpdateLocations: List<*>) {
+        private val batteryProvider = IosBatteryProvider()
+
+        override fun locationManager(
+            manager: CLLocationManager,
+            didUpdateLocations: List<*>
+        ) {
             for (loc in didUpdateLocations) {
                 val location = loc as? CLLocation ?: continue
-                val battery = getBatteryStatus()
-                onPosition(location.toPosition(config.deviceId, battery))
+                val battery = batteryProvider.getBatteryStatus()
+                val position = location.toPosition(deviceId, battery)
+                onLocation(position)  // notify KMP listener, nothing else
             }
         }
 
-        override fun locationManager(manager: CLLocationManager, didFailWithError: platform.Foundation.NSError) {
+        override fun locationManager(
+            manager: CLLocationManager,
+            didFailWithError: platform.Foundation.NSError
+        ) {
             onError("Location error: ${didFailWithError.localizedDescription}")
         }
-    }
-}
 
-// Top-level helper for iOS battery
-internal fun getBatteryStatus(): BatteryStatus {
-    val device = UIDevice.currentDevice
-    device.batteryMonitoringEnabled = true
-    val level = device.batteryLevel
-    return if (level >= 0) {
-        BatteryStatus(
-            level = (level * 100).toDouble(),
-            charging = device.batteryState == UIDeviceBatteryStateCharging ||
-                       device.batteryState == UIDeviceBatteryStateFull
-        )
-    } else {
-        BatteryStatus(level = 0.0, charging = false)
+        override fun locationManager(
+            manager: CLLocationManager,
+            didChangeAuthorizationStatus: Int
+        ) {
+            // Re-start updates if authorization was granted
+            if (didChangeAuthorizationStatus == kCLAuthorizationStatusAuthorizedAlways ||
+                didChangeAuthorizationStatus == kCLAuthorizationStatusAuthorizedWhenInUse
+            ) {
+                manager.startUpdatingLocation()
+            }
+        }
     }
 }
 
@@ -1074,132 +881,33 @@ internal fun CLLocation.toPosition(deviceId: String, battery: BatteryStatus): Po
         latitude = coordinate.latitude,
         longitude = coordinate.longitude,
         altitude = altitude,
-        speed = if (speed >= 0) speed * 1.943844 else 0.0, // m/s -> knots
+        speed = if (speed >= 0) speed * 1.943844 else 0.0,  // m/s -> knots
         course = if (course >= 0) course else 0.0,
         accuracy = horizontalAccuracy,
-        battery = battery.level,
-        charging = battery.charging,
-        mock = false // iOS doesn't expose mock location
+        battery = battery,
+        mock = false  // iOS doesn't expose mock location
     )
 }
 ```
 
-### 4.2 IosDatabaseHelper.kt
+### 4.2 IosBatteryProvider.kt
 
-**Source:** `DatabaseHelper.swift` - CoreData with Position entity
-
-> **Important decision:** CoreData is NOT accessible from Kotlin/Native directly. Use **SQLite via cinterop** or a **simple file-based JSON store** instead.
-> Recommended: Use kotlinx-serialization with a JSON file store for simplicity, or use a KMP SQLite library like `sqlite-driver`.
-
-**Option A: Simple JSON file-based storage (recommended for v1):**
-
-```kotlin
-// iosMain/kotlin/org/traccar/kmp/IosDatabaseHelper.kt
-package org.traccar.kmp
-
-import kotlinx.datetime.Instant
-import platform.Foundation.*
-
-actual class PlatformDatabaseHelper {
-    private val positions = mutableListOf<Position>()
-    private var nextId = 1L
-
-    // You can replace this with SQLDelight or another KMP DB solution later
-    actual fun insertPosition(position: Position) {
-        positions.add(position.copy(id = nextId++))
-    }
-
-    actual fun selectOldestPosition(): Position? {
-        return positions.firstOrNull()
-    }
-
-    actual fun deletePosition(id: Long) {
-        positions.removeAll { it.id == id }
-    }
-
-    actual fun getCount(): Int = positions.size
-}
-```
-
-> **Production upgrade path:** Replace with [SQLDelight](https://github.com/cashapp/sqldelight) which supports both Android SQLite and iOS SQLite natively. This gives you a proper database on both platforms from `commonMain`. See [Step 7 upgrade notes](#production-database-upgrade-sqldelight).
-
-### 4.3 IosNetworkMonitor.kt
-
-**Source:** `NetworkManager.swift` - was mostly stubbed. Use `NWPathMonitor` (modern iOS API):
-
-```kotlin
-// iosMain/kotlin/org/traccar/kmp/IosNetworkMonitor.kt
-package org.traccar.kmp
-
-import platform.Network.*
-import platform.darwin.dispatch_get_main_queue
-
-actual class PlatformNetworkMonitor {
-    private var monitor: nw_path_monitor_t? = null
-    private var currentlyOnline = true
-
-    actual fun start(onNetworkChange: (Boolean) -> Unit) {
-        monitor = nw_path_monitor_create()
-        nw_path_monitor_set_update_handler(monitor!!) { path ->
-            val status = nw_path_get_status(path)
-            val online = status == nw_path_status_satisfied
-            currentlyOnline = online
-            onNetworkChange(online)
-        }
-        nw_path_monitor_set_queue(monitor!!, dispatch_get_main_queue())
-        nw_path_monitor_start(monitor!!)
-    }
-
-    actual fun stop() {
-        monitor?.let { nw_path_monitor_cancel(it) }
-        monitor = null
-    }
-
-    actual fun isOnline(): Boolean = currentlyOnline
-}
-```
-
-### 4.4 IosHttpClient.kt
-
-**Source:** `RequestManager.swift` - NSURLConnection (deprecated). Use NSURLSession:
-
-```kotlin
-// iosMain/kotlin/org/traccar/kmp/IosHttpClient.kt
-package org.traccar.kmp
-
-import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.Foundation.*
-import kotlin.coroutines.resume
-
-actual class PlatformHttpClient {
-    actual suspend fun sendRequest(url: String): Boolean = suspendCancellableCoroutine { cont ->
-        val nsUrl = NSURL.URLWithString(url) ?: run {
-            cont.resume(false)
-            return@suspendCancellableCoroutine
-        }
-        val request = NSMutableURLRequest.requestWithURL(nsUrl).apply {
-            setHTTPMethod("POST")
-            setTimeoutInterval(15.0)
-        }
-        val task = NSURLSession.sharedSession.dataTaskWithRequest(request) { data, response, error ->
-            cont.resume(error == null && data != null)
-        }
-        task.resume()
-        cont.invokeOnCancellation { task.cancel() }
-    }
-}
-```
-
-### 4.5 IosBatteryProvider.kt
+**Source:** `PositionProvider.swift` method `getBatteryStatus()` from Traccar iOS
 
 ```kotlin
 // iosMain/kotlin/org/traccar/kmp/IosBatteryProvider.kt
 package org.traccar.kmp
 
-import platform.UIKit.*
+import platform.UIKit.UIDevice
+import platform.UIKit.UIDeviceBatteryStateCharging
+import platform.UIKit.UIDeviceBatteryStateFull
 
-actual class PlatformBatteryProvider {
-    actual fun getBatteryStatus(): BatteryStatus {
+/**
+ * iOS battery status reader using UIDevice.
+ */
+class IosBatteryProvider : PlatformBatteryProvider {
+
+    override fun getBatteryStatus(): BatteryStatus {
         val device = UIDevice.currentDevice
         device.batteryMonitoringEnabled = true
         val level = device.batteryLevel
@@ -1216,71 +924,86 @@ actual class PlatformBatteryProvider {
 }
 ```
 
+> **That's it for iOS.** Only 2 files. No database, no HTTP client, no network monitor.
+
 ---
 
 ## Step 5: Platform Configuration & Permissions
 
 ### 5.1 Android - What the Consuming App Must Do
 
-The **library consumer** (not this library) must handle these in their app:
-
 #### AndroidManifest.xml (consumer's app)
 
 ```xml
-<!-- Permissions -->
+<!-- Required permissions -->
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-<uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+<!-- Only if consumer sends positions to a server -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
 
-#### Foreground Service (consumer's app)
-
-The consumer must create their own foreground service that holds the `TrackingController`:
+#### Foreground Service (consumer's responsibility)
 
 ```kotlin
-// In the CONSUMER app, not the library
+// In the CONSUMER app, NOT in the library
 class MyTrackingService : Service() {
-    private lateinit var trackingController: TrackingController
+    private lateinit var gpsTracker: GpsTracker
 
     override fun onCreate() {
         super.onCreate()
 
-        val config = TrackingConfig(
-            deviceId = "my-device-123",
-            serverUrl = "http://myserver:5055",
-            interval = 300,
-            bufferEnabled = true
-        )
+        // 1. Create platform provider (passes Context)
+        val locationProvider = AndroidLocationProvider(this)
 
-        trackingController = TrackingController(
-            config = config,
-            positionProvider = PlatformPositionProvider(this),
-            databaseHelper = PlatformDatabaseHelper(this),
-            networkMonitor = PlatformNetworkMonitor(this),
-            httpClient = PlatformHttpClient(),
-            listener = object : TrackingListener {
-                override fun onPositionUpdate(position: Position) { /* ... */ }
-                override fun onPositionSent(position: Position, success: Boolean) { /* ... */ }
-                override fun onError(error: String) { /* ... */ }
-                override fun onStatusChange(message: String) { /* ... */ }
+        // 2. Create tracker with YOUR listener
+        gpsTracker = GpsTracker(
+            locationProvider = locationProvider,
+            listener = object : GpsTrackerListener {
+                override fun onPositionUpdate(position: Position) {
+                    // YOU decide what to do:
+                    // - Send to your server via HTTP/WebSocket
+                    // - Store in your local database
+                    // - Update your UI
+                    // - Anything you want
+                    sendToMyServer(position)
+                    saveToMyDatabase(position)
+                }
+                override fun onError(error: String) {
+                    Log.e("GPS", error)
+                }
+                override fun onStatusChange(status: TrackerStatus) {
+                    Log.d("GPS", "Tracker: $status")
+                }
             }
         )
 
-        // Create notification for foreground service
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        // 3. Start foreground notification (YOUR responsibility)
+        startForeground(1, createNotification())
 
-        trackingController.start()
+        // 4. Start tracking with dynamic config
+        gpsTracker.start(GpsConfig(
+            deviceId = "my-device-123",
+            interval = 300,
+            accuracy = LocationAccuracy.HIGH
+        ))
+    }
+
+    // Change config at runtime without restarting
+    fun changeInterval(newInterval: Long) {
+        gpsTracker.updateConfig(
+            gpsTracker.currentConfig()!!.copy(interval = newInterval)
+        )
     }
 
     override fun onDestroy() {
-        trackingController.stop()
+        gpsTracker.stop()
         super.onDestroy()
     }
 
@@ -1293,13 +1016,13 @@ class MyTrackingService : Service() {
 #### Info.plist (consumer's app)
 
 ```xml
-<!-- Background modes -->
+<!-- Background modes - REQUIRED for background GPS -->
 <key>UIBackgroundModes</key>
 <array>
     <string>location</string>
 </array>
 
-<!-- Location permission descriptions -->
+<!-- Location permission strings - REQUIRED -->
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 <string>Required for background GPS tracking</string>
 <key>NSLocationAlwaysUsageDescription</key>
@@ -1311,99 +1034,182 @@ class MyTrackingService : Service() {
 #### Swift Integration (consumer's app)
 
 ```swift
-import KmpGpsTracker  // Your KMP framework name
+import KmpGpsListener  // Your KMP framework name
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
-    var trackingController: TrackingController?
+    var gpsTracker: GpsTracker?
 
-    func startTracking() {
-        let config = TrackingConfig(
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: ...) -> Bool {
+
+        UIDevice.current.isBatteryMonitoringEnabled = true
+
+        // 1. Create platform provider (no Context needed on iOS)
+        let locationProvider = IosLocationProvider()
+
+        // 2. Create listener
+        let listener = MyGpsListener()
+
+        // 3. Create tracker
+        let tracker = GpsTracker(
+            locationProvider: locationProvider,
+            listener: listener
+        )
+
+        // 4. Start with dynamic config
+        tracker.start(config: GpsConfig(
             deviceId: "my-device-123",
-            serverUrl: "http://myserver:5055",
             interval: 300,
             distance: 0.0,
             angle: 0.0,
-            accuracy: .medium,
-            bufferEnabled: true,
-            useWakeLock: false
-        )
+            accuracy: .medium
+        ))
 
-        let controller = TrackingController(
-            config: config,
-            positionProvider: PlatformPositionProvider(),
-            databaseHelper: PlatformDatabaseHelper(),
-            networkMonitor: PlatformNetworkMonitor(),
-            httpClient: PlatformHttpClient(),
-            listener: nil  // or implement TrackingListener
-        )
+        gpsTracker = tracker
+        return true
+    }
+}
 
-        controller.start()
-        trackingController = controller
+// Your listener - YOU decide what to do with positions
+class MyGpsListener: GpsTrackerListener {
+    func onPositionUpdate(position: Position) {
+        // Send to your server, store locally, show on map, etc.
+        sendToMyServer(position)
+    }
+
+    func onError(error: String) {
+        print("GPS Error: \(error)")
+    }
+
+    func onStatusChange(status: TrackerStatus) {
+        print("Tracker: \(status)")
     }
 }
 ```
 
 ---
 
-## Step 6: Integration Guide for Consumers
+## Step 6: Consumer Integration Examples
 
-### Android (Gradle)
+### 6.1 Consumer Sends to Traccar Server
+
+If the consumer wants to replicate the original Traccar behavior, they handle it in their listener:
 
 ```kotlin
-// Consumer's build.gradle.kts
-dependencies {
-    implementation("io.github.yourorg:kmp-gps-tracker:1.0.0")
+// In consumer app - NOT in the library
+class TraccarServerSender : GpsTrackerListener {
+
+    override fun onPositionUpdate(position: Position) {
+        // Consumer formats the URL (was ProtocolFormatter in old lib)
+        val url = buildString {
+            append("http://myserver:5055")
+            append("?id=${position.deviceId}")
+            append("&timestamp=${position.time.epochSeconds}")
+            append("&lat=${position.latitude}")
+            append("&lon=${position.longitude}")
+            append("&speed=${position.speed}")
+            append("&bearing=${position.course}")
+            append("&altitude=${position.altitude}")
+            append("&accuracy=${position.accuracy}")
+            append("&batt=${position.battery.level}")
+            if (position.battery.charging) append("&charge=true")
+        }
+
+        // Consumer sends HTTP request (was RequestManager in old lib)
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 15000
+                connection.inputStream.bufferedReader().readText()
+                connection.disconnect()
+            } catch (e: Exception) {
+                // Consumer handles retry, buffering, etc.
+            }
+        }
+    }
+
+    override fun onError(error: String) { /* ... */ }
+    override fun onStatusChange(status: TrackerStatus) { /* ... */ }
 }
 ```
 
-### iOS (Swift Package Manager / CocoaPods)
+### 6.2 Consumer Stores in Local Database
 
-The KMP library generates an XCFramework. Consumers integrate via:
+```kotlin
+// In consumer app
+class DatabaseSaver(private val db: MyDatabase) : GpsTrackerListener {
 
-**Option A: Direct framework**
+    override fun onPositionUpdate(position: Position) {
+        db.insertPosition(
+            deviceId = position.deviceId,
+            lat = position.latitude,
+            lon = position.longitude,
+            time = position.time.toEpochMilliseconds(),
+            speed = position.speed,
+            battery = position.battery.level
+        )
+    }
+
+    override fun onError(error: String) { /* ... */ }
+    override fun onStatusChange(status: TrackerStatus) { /* ... */ }
+}
 ```
-./gradlew :library:assembleXCFramework
-```
-Then add the generated `.xcframework` to the Xcode project.
 
-**Option B: CocoaPods** (add cocoapods plugin to build.gradle.kts)
+### 6.3 Consumer with Multiple Listeners (Compose Pattern)
+
+```kotlin
+// Combine multiple behaviors
+class CompositeListener(
+    private val listeners: List<GpsTrackerListener>
+) : GpsTrackerListener {
+    override fun onPositionUpdate(position: Position) {
+        listeners.forEach { it.onPositionUpdate(position) }
+    }
+    override fun onError(error: String) {
+        listeners.forEach { it.onError(error) }
+    }
+    override fun onStatusChange(status: TrackerStatus) {
+        listeners.forEach { it.onStatusChange(status) }
+    }
+}
+
+// Usage:
+val tracker = GpsTracker(
+    locationProvider = AndroidLocationProvider(context),
+    listener = CompositeListener(listOf(
+        TraccarServerSender(),
+        DatabaseSaver(db),
+        MapUpdater(mapView),
+        AnalyticsLogger()
+    ))
+)
+```
+
+### 6.4 Dynamic Config Changes at Runtime
+
+```kotlin
+// Change interval at runtime
+tracker.updateConfig(tracker.currentConfig()!!.copy(interval = 60))
+
+// Change accuracy at runtime
+tracker.updateConfig(tracker.currentConfig()!!.copy(accuracy = LocationAccuracy.HIGH))
+
+// Change device ID at runtime
+tracker.updateConfig(tracker.currentConfig()!!.copy(deviceId = "new-device-456"))
+
+// Check current state
+if (tracker.isTracking()) {
+    val config = tracker.currentConfig()
+    println("Tracking with interval=${config?.interval}s")
+}
+```
 
 ---
 
 ## Step 7: Testing
 
 ### 7.1 Common Tests (Pure Kotlin)
-
-```kotlin
-// commonTest/kotlin/org/traccar/kmp/ProtocolFormatterTest.kt
-package org.traccar.kmp
-
-import kotlinx.datetime.Instant
-import kotlin.test.Test
-import kotlin.test.assertTrue
-
-class ProtocolFormatterTest {
-    @Test
-    fun testFormatRequest() {
-        val position = Position(
-            deviceId = "test123",
-            time = Instant.fromEpochSeconds(1234567890),
-            latitude = 40.7128,
-            longitude = -74.0060,
-            speed = 15.5,
-            course = 90.0,
-            altitude = 10.0,
-            accuracy = 5.0,
-            battery = 85.0,
-            charging = true
-        )
-        val url = ProtocolFormatter.formatRequest("http://server:5055", position)
-        assertTrue(url.contains("id=test123"))
-        assertTrue(url.contains("lat=40.7128"))
-        assertTrue(url.contains("charge=true"))
-    }
-}
-```
 
 ```kotlin
 // commonTest/kotlin/org/traccar/kmp/DistanceCalculatorTest.kt
@@ -1415,27 +1221,107 @@ import kotlin.test.assertTrue
 class DistanceCalculatorTest {
     @Test
     fun testDistance() {
-        // NYC to LA ≈ 3,944 km
+        // NYC to LA ~ 3,944 km
         val dist = DistanceCalculator.distance(40.7128, -74.0060, 34.0522, -118.2437)
-        assertTrue(dist > 3_900_000 && dist < 4_000_000, "Distance should be ~3944 km")
+        assertTrue(dist > 3_900_000 && dist < 4_000_000)
+    }
+
+    @Test
+    fun testZeroDistance() {
+        val dist = DistanceCalculator.distance(40.0, -74.0, 40.0, -74.0)
+        assertTrue(dist < 1.0) // should be ~0
     }
 }
 ```
 
-### 7.2 Production Database Upgrade (SQLDelight)
-
-For production, replace the in-memory iOS database with **SQLDelight** which provides a shared SQLite implementation across both platforms:
-
 ```kotlin
-// Add to libs.versions.toml
-// sqldelight = "2.0.2"
-// [libraries]
-// sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "sqldelight" }
-// sqldelight-android = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
-// sqldelight-native = { module = "app.cash.sqldelight:native-driver", version.ref = "sqldelight" }
+// commonTest/kotlin/org/traccar/kmp/GpsTrackerFilterTest.kt
+package org.traccar.kmp
+
+import kotlinx.datetime.Instant
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class GpsTrackerFilterTest {
+
+    private class CollectingListener : GpsTrackerListener {
+        val positions = mutableListOf<Position>()
+        override fun onPositionUpdate(position: Position) { positions.add(position) }
+        override fun onError(error: String) {}
+        override fun onStatusChange(status: TrackerStatus) {}
+    }
+
+    private class FakeLocationProvider : PlatformLocationProvider {
+        var onLocation: ((Position) -> Unit)? = null
+        override fun startUpdates(config: GpsConfig, onLocation: (Position) -> Unit, onError: (String) -> Unit) {
+            this.onLocation = onLocation
+        }
+        override fun stopUpdates() { onLocation = null }
+        override fun requestSingleLocation(config: GpsConfig, onLocation: (Position) -> Unit) {}
+
+        fun emit(position: Position) { onLocation?.invoke(position) }
+    }
+
+    @Test
+    fun testFirstPositionAlwaysAccepted() {
+        val provider = FakeLocationProvider()
+        val listener = CollectingListener()
+        val tracker = GpsTracker(provider, listener)
+
+        tracker.start(GpsConfig(deviceId = "test", interval = 300))
+
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000)))
+        assertEquals(1, listener.positions.size)
+    }
+
+    @Test
+    fun testPositionFilteredByInterval() {
+        val provider = FakeLocationProvider()
+        val listener = CollectingListener()
+        val tracker = GpsTracker(provider, listener)
+
+        tracker.start(GpsConfig(deviceId = "test", interval = 300))
+
+        // First: accepted
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000)))
+        // Second: only 10s later, filtered out
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1010)))
+        // Third: 300s later, accepted
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1300)))
+
+        assertEquals(2, listener.positions.size)
+    }
+
+    @Test
+    fun testPositionAcceptedByDistance() {
+        val provider = FakeLocationProvider()
+        val listener = CollectingListener()
+        val tracker = GpsTracker(provider, listener)
+
+        tracker.start(GpsConfig(deviceId = "test", interval = 99999, distance = 100.0))
+
+        // First: accepted
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000),
+            latitude = 40.0, longitude = -74.0))
+        // Second: too close (same location), filtered
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1005),
+            latitude = 40.0, longitude = -74.0))
+        // Third: far enough (~111km), accepted
+        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1010),
+            latitude = 41.0, longitude = -74.0))
+
+        assertEquals(2, listener.positions.size)
+    }
+}
 ```
 
-This lets you define the SQL schema once in `commonMain` and have it work on both platforms.
+### 7.2 Testing on Real Devices
+
+GPS background tracking **cannot be fully tested in simulators**. You must test on real devices for:
+- Background location updates
+- Wake lock behavior (Android)
+- Significant location changes (iOS)
+- Battery impact
 
 ---
 
@@ -1445,122 +1331,114 @@ This lets you define the SQL schema once in `commonMain` and have it work on bot
 
 | Class | Type | Description |
 |-------|------|-------------|
-| `TrackingController` | Class | Main entry point. Call `start()`, `stop()`, `sendSingleLocation()` |
-| `TrackingConfig` | Data class | All configuration options |
-| `TrackingListener` | Interface | Callbacks for position updates, send results, errors |
-| `Position` | Data class | GPS location with metadata |
+| `GpsTracker` | Class | Main entry point. `start(config)`, `stop()`, `updateConfig()`, `requestSingleLocation()` |
+| `GpsConfig` | Data class | Dynamic configuration: deviceId, interval, distance, angle, accuracy |
+| `GpsTrackerListener` | Interface | Callbacks: `onPositionUpdate()`, `onError()`, `onStatusChange()` |
+| `Position` | Data class | GPS location with battery info embedded |
 | `BatteryStatus` | Data class | Battery level and charging state |
 | `LocationAccuracy` | Enum | HIGH, MEDIUM, LOW |
+| `TrackerStatus` | Enum | STARTED, STOPPED |
+| `PlatformLocationProvider` | Interface | Implement for custom GPS source |
+| `PlatformBatteryProvider` | Interface | Implement for custom battery source |
 
-### TrackingController Methods
+### GpsTracker Methods
 
 | Method | Description |
 |--------|-------------|
-| `start()` | Begin tracking. Starts GPS, network monitoring, buffer flushing |
-| `stop()` | Stop all tracking. Cleans up resources |
-| `sendSingleLocation(alarm?)` | Send one immediate position (e.g., SOS) |
+| `start(config)` | Start GPS listening with dynamic configuration |
+| `stop()` | Stop GPS listening and release resources |
+| `updateConfig(config)` | Change configuration at runtime (restarts provider) |
+| `requestSingleLocation()` | Get one immediate position reading |
+| `isTracking()` | Check if currently listening |
+| `currentConfig()` | Get current configuration (null if never started) |
+
+### Platform Implementations
+
+| Platform | Location Provider | Battery Provider |
+|----------|-------------------|------------------|
+| Android | `AndroidLocationProvider(context)` | `AndroidBatteryProvider(context)` |
+| iOS | `IosLocationProvider()` | `IosBatteryProvider()` |
 
 ---
 
 ## Component Mapping Table
 
-| Concept | Android Source | iOS Source | KMP Target |
-|---------|---------------|-----------|------------|
-| **Orchestrator** | `TrackingController.kt` | `TrackingController.swift` | `TrackingController.kt` (commonMain) |
-| **Position data** | `Position.kt` | `Position.swift` (CoreData) | `Position.kt` (commonMain) |
-| **Battery data** | `BatteryStatus.kt` | `BatteryStatus.swift` | `BatteryStatus.kt` (commonMain) |
-| **URL formatting** | `ProtocolFormatter.kt` | `ProtocolFormatter.swift` | `ProtocolFormatter.kt` (commonMain) |
-| **Distance calc** | `Location.distanceTo()` | `DistanceCalculator.swift` | `DistanceCalculator.kt` (commonMain) |
-| **GPS provider** | `AndroidPositionProvider.kt` | `PositionProvider.swift` | `PlatformPositionProvider` (expect/actual) |
-| **Database** | `DatabaseHelper.kt` (SQLite) | `DatabaseHelper.swift` (CoreData) | `PlatformDatabaseHelper` (expect/actual) |
-| **Network monitor** | `NetworkManager.kt` | `NetworkManager.swift` | `PlatformNetworkMonitor` (expect/actual) |
-| **HTTP client** | `RequestManager.kt` | `RequestManager.swift` | `PlatformHttpClient` (expect/actual) |
-| **Battery reader** | `PositionProvider.getBatteryStatus()` | `PositionProvider.getBatteryStatus()` | `PlatformBatteryProvider` (expect/actual) |
-| **Config/Settings** | `MainFragment` (SharedPrefs) | `Root.plist` (UserDefaults) | `TrackingConfig` data class (passed in) |
-| **Foreground svc** | `TrackingService.kt` | N/A (iOS background mode) | **NOT in library** - consumer's responsibility |
-| **Boot receiver** | `AutostartReceiver.kt` | N/A | **NOT in library** - consumer's responsibility |
-| **Wake lock** | `TrackingService.kt` | N/A | **NOT in library** - consumer's responsibility |
-| **Permissions** | `MainFragment.kt` | `Info.plist` | **NOT in library** - consumer's responsibility |
-| **UI** | `MainFragment`, `StatusActivity` | `MainViewController` | **NOT in library** |
+| Original Traccar Component | Android Source | iOS Source | KMP Library | Consumer's Responsibility |
+|---|---|---|---|---|
+| **GPS listening** | `AndroidPositionProvider.kt` | `PositionProvider.swift` | `AndroidLocationProvider` / `IosLocationProvider` | -- |
+| **Position filtering** | `PositionProvider.processLocation()` | `PositionProvider.didUpdateLocations()` | `GpsTracker.shouldAcceptPosition()` | -- |
+| **Battery reading** | `PositionProvider.getBatteryStatus()` | `PositionProvider.getBatteryStatus()` | `AndroidBatteryProvider` / `IosBatteryProvider` | -- |
+| **Distance calc** | `Location.distanceTo()` | `DistanceCalculator.swift` | `DistanceCalculator.kt` | -- |
+| **Position data** | `Position.kt` | `Position.swift` | `Position.kt` | -- |
+| **Config** | `MainFragment` (SharedPrefs keys) | `Root.plist` (UserDefaults keys) | `GpsConfig` (dynamic, no persistence) | Store/load config however you want |
+| **URL formatting** | `ProtocolFormatter.kt` | `ProtocolFormatter.swift` | -- | Format URLs in your listener |
+| **HTTP sending** | `RequestManager.kt` | `RequestManager.swift` | -- | Send HTTP in your listener |
+| **Position buffering** | `DatabaseHelper.kt` (SQLite) | `DatabaseHelper.swift` (CoreData) | -- | Buffer in your own DB |
+| **Network monitoring** | `NetworkManager.kt` | `NetworkManager.swift` | -- | Monitor network yourself |
+| **Retry logic** | `TrackingController.retry()` | `TrackingController.retry()` | -- | Implement retry yourself |
+| **State machine** | `TrackingController.kt` (write/read/send/delete) | `TrackingController.swift` (write/read/send/delete) | -- | Implement in your listener |
+| **Foreground service** | `TrackingService.kt` | N/A (iOS background mode) | -- | Create your own service |
+| **Boot receiver** | `AutostartReceiver.kt` | N/A | -- | Create your own receiver |
+| **Wake lock** | `TrackingService.kt` | N/A | -- | Manage wake locks yourself |
+| **Permissions** | `MainFragment.kt` | `Info.plist` | -- | Request permissions yourself |
+| **UI** | `MainFragment`, `StatusActivity` | `MainViewController` | -- | Build your own UI |
 
 ---
 
 ## Critical Notes & Gotchas
 
-### 1. expect/actual Constructor Parameters
+### 1. Interface Pattern (No expect/actual Constructor Mismatch)
 
-Android `actual` classes need `Context`. iOS ones don't. Handle this by passing platform-specific params to constructors:
+The library uses **interfaces** (`PlatformLocationProvider`, `PlatformBatteryProvider`) instead of `expect/actual` classes. This avoids the constructor parameter mismatch problem:
 
-```kotlin
-// Android: PlatformPositionProvider(context: Context)
-// iOS: PlatformPositionProvider()  -- no params needed
-```
+- Android needs `Context` in constructors
+- iOS needs no constructor parameters
 
-The `expect` declaration should have **no constructor parameters**. Instead, create a factory:
-
-```kotlin
-// commonMain
-expect class PlatformPositionProvider
-
-// Or use a factory pattern:
-expect fun createPositionProvider(): PlatformPositionProvider
-```
-
-**Alternative (recommended):** Use an interface in commonMain and provide platform implementations:
-
-```kotlin
-// commonMain
-interface PositionProvider {
-    fun startUpdates(config: TrackingConfig, onPosition: (Position) -> Unit, onError: (String) -> Unit)
-    fun stopUpdates()
-    fun requestSingleLocation(config: TrackingConfig, onPosition: (Position) -> Unit)
-}
-
-// The consumer creates the platform-specific instance and passes it to TrackingController
-```
-
-This avoids the expect/actual constructor mismatch entirely. The `TrackingController` accepts interfaces, and each platform provides its own implementation.
+With interfaces, the **consumer** creates the platform-specific instance and passes it to `GpsTracker`. The library's common code only knows about the interface.
 
 ### 2. iOS Background Location - Critical Settings
 
-The iOS consumer app **must** set these or tracking will stop in background:
+The iOS consumer app **must** configure these or GPS stops in background:
 - `UIBackgroundModes: location` in Info.plist
-- `pausesLocationUpdatesAutomatically = false`
-- `allowsBackgroundLocationUpdates = true`
-- Request `.authorizedAlways` (not just `.authorizedWhenInUse`)
+- The library sets `pausesLocationUpdatesAutomatically = false` internally
+- The library sets `allowsBackgroundLocationUpdates = true` internally
+- The library calls `requestAlwaysAuthorization()` internally
+- The library calls `startMonitoringSignificantLocationChanges()` internally
 
-### 3. Android Foreground Service - Required Since Android 8+
+### 3. Android Foreground Service - Required
 
-The library does NOT manage the foreground service. The consumer app **must**:
+The library does NOT manage Android foreground services. The consumer **must**:
 - Create a foreground service with a persistent notification
-- Hold the `TrackingController` reference in the service
-- Handle `FOREGROUND_SERVICE_LOCATION` service type (Android 14+)
+- Create `AndroidLocationProvider(serviceContext)` inside the service
+- Handle `FOREGROUND_SERVICE_LOCATION` type (Android 14+)
 
 ### 4. Speed Conversion
 
-Both platforms convert `m/s → knots (* 1.943844)`. This is done in the platform providers before creating Position objects.
+Both platforms convert `m/s -> knots (* 1.943844)` in the platform providers. The `Position.speed` is always in knots.
 
-### 5. Kotlin/Native Threading (iOS)
+### 5. Filtering Happens in KMP
 
-- Kotlin/Native with the new memory model (default since Kotlin 1.7.20) allows sharing objects across threads
-- `kotlinx.coroutines` works cross-platform with `Dispatchers.Main` and `Dispatchers.Default`
-- `CLLocationManager` delegate callbacks arrive on the main thread
+Position filtering (interval/distance/angle) is done in `GpsTracker` (commonMain), NOT in native code. Native code sends ALL raw locations to KMP. This ensures filtering logic is shared and testable.
 
-### 6. iOS CoreData vs SQLite
+### 6. No Coroutines Required
 
-CoreData cannot be directly accessed from Kotlin/Native. Options:
-1. **Simple in-memory list** (quick start, loses data on app kill)
-2. **JSON file storage** (persists but slow with many positions)
-3. **SQLDelight** (recommended for production - shared SQL across platforms)
-4. **Swift wrapper** exposed via framework interop
+The library is purely callback-based. No `suspend` functions, no `Flow`, no coroutines dependency. This keeps the library lightweight and avoids Kotlin/Native coroutine complexities.
 
-### 7. Testing on Real Devices
+### 7. Consumer Controls Everything
 
-GPS background tracking **cannot be fully tested in simulators**. You must test on real devices for:
-- Background location updates
-- Wake lock behavior (Android)
-- Significant location changes (iOS)
-- Battery impact
+| Concern | Who handles it? |
+|---------|-----------------|
+| GPS listening | Library |
+| Position filtering | Library |
+| Battery reading | Library |
+| Sending to server | Consumer |
+| Storing positions | Consumer |
+| Network monitoring | Consumer |
+| Retry on failure | Consumer |
+| Foreground service | Consumer |
+| Permissions | Consumer |
+| Config persistence | Consumer |
+| UI | Consumer |
 
 ### 8. Build & Run Commands
 
@@ -1588,12 +1466,12 @@ GPS background tracking **cannot be fully tested in simulators**. You must test 
 
 ## Implementation Order (Recommended)
 
-1. **Start with commonMain** - Position, BatteryStatus, TrackingConfig, ProtocolFormatter, DistanceCalculator
-2. **Add expect declarations** - PlatformPositionProvider, PlatformDatabaseHelper, etc.
-3. **Implement androidMain** - All actual classes using Android APIs
-4. **Write & run common tests** - ProtocolFormatter, DistanceCalculator
-5. **Implement iosMain** - All actual classes using iOS APIs via Kotlin/Native
-6. **Create a sample Android app** - Test foreground service integration
-7. **Create a sample iOS app** - Test background location integration
-8. **Upgrade database** to SQLDelight for production persistence
-9. **Publish** to Maven Central / generate XCFramework
+1. **commonMain first** - `Position`, `BatteryStatus`, `GpsConfig`, `LocationAccuracy`, `TrackerStatus`
+2. **Interfaces** - `PlatformLocationProvider`, `PlatformBatteryProvider`, `GpsTrackerListener`
+3. **Core logic** - `DistanceCalculator`, `GpsTracker` (with filtering)
+4. **Common tests** - `DistanceCalculatorTest`, `GpsTrackerFilterTest` (using fake provider)
+5. **androidMain** - `AndroidLocationProvider`, `AndroidBatteryProvider` (2 files only)
+6. **iosMain** - `IosLocationProvider`, `IosBatteryProvider` (2 files only)
+7. **Sample Android app** - Foreground service + listener that logs positions
+8. **Sample iOS app** - AppDelegate + listener that logs positions
+9. **Publish** - Maven Central / XCFramework
