@@ -1,7 +1,9 @@
 # KMP GPS Background Listener Library - Implementation Guide
 
 > A pure GPS background listener library. Native side only collects locations and notifies KMP listeners. The consumer app decides what to do with positions (send to server, store, etc.).
-
+!!! Remove all traccar words from code
+> 
+> USE BEST PRACTICES TO BUILD LIBRARY
 ---
 
 ## Table of Contents

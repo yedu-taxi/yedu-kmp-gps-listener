@@ -8,35 +8,34 @@ plugins {
 }
 
 group = "io.github.saggeldi"
-version = "0.0.2"
+version = "0.0.3"
 
 kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     androidLibrary {
-        namespace = "org.jetbrains.kotlinx.multiplatform.library.template"
+        namespace = "io.github.saggeldi.gps"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
-        withJava() // enable java compilation support
         withHostTestBuilder {}.configure {}
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }
 
         compilations.configureEach {
             compilerOptions.configure {
-                jvmTarget.set(
-                    JvmTarget.JVM_11
-                )
+                jvmTarget.set(JvmTarget.JVM_11)
             }
         }
     }
+
     iosX64()
     iosArm64()
     iosSimulatorArm64()
 
     sourceSets {
         commonMain.dependencies {
-            //put your multiplatform dependencies here
+            implementation(libs.kotlinx.datetime)
         }
 
         commonTest.dependencies {
@@ -54,7 +53,7 @@ mavenPublishing {
 
     pom {
         name = "Yedu KMP GPS Listener"
-        description = "Kotlin multiplatform background gps listener with offline caching"
+        description = "Kotlin Multiplatform GPS background listener library"
         inceptionYear = "2026"
         url = "https://github.com/yedu-taxi/yedu-kmp-gps-listener"
 
