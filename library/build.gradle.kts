@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.saggeldi"
-version = "0.0.4"
+version = "0.0.5"
 
 kotlin {
     compilerOptions {
@@ -35,7 +35,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.datetime)
+            api(libs.kotlinx.datetime)
         }
 
         androidMain.dependencies {
