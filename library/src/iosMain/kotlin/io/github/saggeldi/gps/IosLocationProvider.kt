@@ -3,7 +3,7 @@
 package io.github.saggeldi.gps
 
 import kotlinx.cinterop.useContents
-import kotlinx.datetime.toKotlinInstant
+
 import platform.CoreLocation.*
 import platform.darwin.NSObject
 
@@ -99,7 +99,7 @@ class IosLocationProvider : PlatformLocationProvider {
 internal fun CLLocation.toPosition(deviceId: String, battery: BatteryStatus): Position {
     return Position(
         deviceId = deviceId,
-        time = timestamp.toKotlinInstant(),
+        time = (timestamp.timeIntervalSince1970 * 1000).toLong(),
         latitude = coordinate.useContents { latitude },
         longitude = coordinate.useContents { longitude },
         altitude = altitude,

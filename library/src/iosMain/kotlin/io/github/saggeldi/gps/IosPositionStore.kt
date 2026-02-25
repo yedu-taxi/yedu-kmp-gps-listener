@@ -1,6 +1,5 @@
 package io.github.saggeldi.gps
 
-import kotlinx.datetime.Instant
 import platform.Foundation.NSUserDefaults
 
 class IosPositionStore : PositionStore {
@@ -23,7 +22,7 @@ class IosPositionStore : PositionStore {
             val entry = mapOf<String, Any>(
                 "id" to id,
                 "deviceId" to position.deviceId,
-                "time" to position.time.toEpochMilliseconds(),
+                "time" to position.time,
                 "latitude" to position.latitude,
                 "longitude" to position.longitude,
                 "altitude" to position.altitude,
@@ -82,7 +81,7 @@ class IosPositionStore : PositionStore {
         return Position(
             id = toLong(map["id"]),
             deviceId = map["deviceId"] as? String ?: "",
-            time = Instant.fromEpochMilliseconds(toLong(map["time"])),
+            time = toLong(map["time"]),
             latitude = toDouble(map["latitude"]),
             longitude = toDouble(map["longitude"]),
             altitude = toDouble(map["altitude"]),

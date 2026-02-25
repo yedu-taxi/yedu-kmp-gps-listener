@@ -6,7 +6,7 @@ object ProtocolFormatter {
         val sb = StringBuilder(url)
         sb.append(if (url.contains("?")) "&" else "?")
         sb.append("id=").append(encodeParam(position.deviceId))
-        sb.append("&timestamp=").append(position.time.epochSeconds)
+        sb.append("&timestamp=").append(position.time / 1000)
         sb.append("&lat=").append(position.latitude)
         sb.append("&lon=").append(position.longitude)
         sb.append("&speed=").append(position.speed)

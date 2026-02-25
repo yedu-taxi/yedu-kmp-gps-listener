@@ -1,11 +1,9 @@
 package io.github.saggeldi.gps
 
-import kotlinx.datetime.Instant
-
 data class Position(
     val id: Long = 0,
     val deviceId: String,
-    val time: Instant,
+    val time: Long,
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,
     val altitude: Double = 0.0,

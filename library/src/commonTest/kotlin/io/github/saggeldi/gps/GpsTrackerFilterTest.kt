@@ -1,8 +1,9 @@
 package io.github.saggeldi.gps
 
-import kotlinx.datetime.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+
+private fun epochSeconds(seconds: Long): Long = seconds * 1000
 
 class GpsTrackerFilterTest {
 
@@ -32,7 +33,7 @@ class GpsTrackerFilterTest {
 
         tracker.start(GpsConfig(deviceId = "test", interval = 300))
 
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000)))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1000)))
         assertEquals(1, listener.positions.size)
     }
 
@@ -44,9 +45,9 @@ class GpsTrackerFilterTest {
 
         tracker.start(GpsConfig(deviceId = "test", interval = 300))
 
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000)))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1010)))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1300)))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1000)))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1010)))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1300)))
 
         assertEquals(2, listener.positions.size)
     }
@@ -59,11 +60,11 @@ class GpsTrackerFilterTest {
 
         tracker.start(GpsConfig(deviceId = "test", interval = 99999, distance = 100.0))
 
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000),
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1000),
             latitude = 40.0, longitude = -74.0))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1005),
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1005),
             latitude = 40.0, longitude = -74.0))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1010),
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1010),
             latitude = 41.0, longitude = -74.0))
 
         assertEquals(2, listener.positions.size)
@@ -77,9 +78,9 @@ class GpsTrackerFilterTest {
 
         tracker.start(GpsConfig(deviceId = "test", interval = 99999, angle = 30.0))
 
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000), course = 0.0))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1005), course = 10.0))
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1010), course = 45.0))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1000), course = 0.0))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1005), course = 10.0))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1010), course = 45.0))
 
         assertEquals(2, listener.positions.size)
     }
@@ -92,7 +93,7 @@ class GpsTrackerFilterTest {
 
         tracker.start(GpsConfig(deviceId = "test", interval = 0))
 
-        provider.emit(Position(deviceId = "test", time = Instant.fromEpochSeconds(1000)))
+        provider.emit(Position(deviceId = "test", time = epochSeconds(1000)))
         tracker.stop()
 
         assertEquals(1, listener.positions.size)

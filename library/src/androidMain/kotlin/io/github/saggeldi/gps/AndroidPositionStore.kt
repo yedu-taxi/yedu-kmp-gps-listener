@@ -7,7 +7,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.Handler
 import android.os.Looper
-import kotlinx.datetime.Instant
+
 
 class AndroidPositionStore(
     context: Context
@@ -17,7 +17,7 @@ class AndroidPositionStore(
     private val handler = Handler(Looper.getMainLooper())
 
     companion object {
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
         private const val DATABASE_NAME = "gps_positions.db"
     }
 
@@ -54,7 +54,7 @@ class AndroidPositionStore(
             val success = try {
                 val values = ContentValues().apply {
                     put("deviceId", position.deviceId)
-                    put("time", position.time.toEpochMilliseconds())
+                    put("time", position.time)
                     put("latitude", position.latitude)
                     put("longitude", position.longitude)
                     put("altitude", position.altitude)
@@ -84,9 +84,7 @@ class AndroidPositionStore(
                         val position = Position(
                             id = cursor.getLong(cursor.getColumnIndex("id")),
                             deviceId = cursor.getString(cursor.getColumnIndex("deviceId")),
-                            time = Instant.fromEpochMilliseconds(
-                                cursor.getLong(cursor.getColumnIndex("time"))
-                            ),
+                            time = cursor.getLong(cursor.getColumnIndex("time")),
                             latitude = cursor.getDouble(cursor.getColumnIndex("latitude")),
                             longitude = cursor.getDouble(cursor.getColumnIndex("longitude")),
                             altitude = cursor.getDouble(cursor.getColumnIndex("altitude")),

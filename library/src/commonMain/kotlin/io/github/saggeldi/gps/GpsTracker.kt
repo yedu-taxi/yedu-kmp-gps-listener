@@ -76,7 +76,7 @@ class GpsTracker(
     private fun shouldAcceptPosition(position: Position, config: GpsConfig): Boolean {
         val last = lastPosition ?: return true
 
-        val elapsedSeconds = position.time.epochSeconds - last.time.epochSeconds
+        val elapsedSeconds = (position.time - last.time) / 1000
         if (elapsedSeconds >= config.interval) return true
 
         if (config.distance > 0) {

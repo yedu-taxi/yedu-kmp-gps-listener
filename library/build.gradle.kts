@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.saggeldi"
-version = "0.0.5"
+version = "0.0.6"
 
 kotlin {
     compilerOptions {
@@ -34,10 +34,6 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
-        commonMain.dependencies {
-            api(libs.kotlinx.datetime)
-        }
-
         androidMain.dependencies {
             implementation("androidx.core:core-ktx:1.12.0")
         }

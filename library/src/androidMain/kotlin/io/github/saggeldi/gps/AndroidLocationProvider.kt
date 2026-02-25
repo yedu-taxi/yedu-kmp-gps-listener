@@ -6,7 +6,6 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
-import kotlinx.datetime.Clock
 
 class AndroidLocationProvider(
     private val context: Context
@@ -91,7 +90,7 @@ class AndroidLocationProvider(
     private fun Location.toPosition(deviceId: String, battery: BatteryStatus): Position {
         return Position(
             deviceId = deviceId,
-            time = Clock.System.now(),
+            time = System.currentTimeMillis(),
             latitude = latitude,
             longitude = longitude,
             altitude = altitude,
