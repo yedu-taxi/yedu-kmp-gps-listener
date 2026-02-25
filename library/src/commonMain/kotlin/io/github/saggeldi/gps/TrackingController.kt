@@ -4,8 +4,8 @@ package io.github.saggeldi.gps
  * Full tracking pipeline that combines GPS listening, position caching,
  * network monitoring, and HTTP sending.
  *
- * State machine: write -> read -> send -> delete -> read
- * With retry on failure: read -> send -> retry -> read -> send
+ * State machine: write -> readAll -> sendBatch -> deleteSent -> readAll
+ * With retry on failure: readAll -> sendBatch -> retry -> readAll -> sendBatch
  *
  * Based on TrackingController from both Android and iOS Traccar clients.
  */
@@ -103,14 +103,33 @@ class TrackingController(
 
     private fun read() {
         if (stopped) return
-        positionStore.selectFirstPosition { success, position ->
+        positionStore.selectAllPositions { success, positions ->
             if (success) {
-                if (position != null) {
+                if (positions.isNotEmpty()) {
                     val currentDeviceId = gpsTracker.currentConfig()?.deviceId
-                    if (currentDeviceId == null || position.deviceId == currentDeviceId) {
-                        send(position)
+                    val toSend = mutableListOf<Position>()
+                    val toDelete = mutableListOf<Position>()
+
+                    for (position in positions) {
+                        if (currentDeviceId == null || position.deviceId == currentDeviceId) {
+                            toSend.add(position)
+                        } else {
+                            toDelete.add(position)
+                        }
+                    }
+
+                    if (toDelete.isNotEmpty()) {
+                        deletePositions(toDelete.map { it.id }) {
+                            if (toSend.isNotEmpty()) {
+                                sendBatch(toSend)
+                            } else {
+                                read()
+                            }
+                        }
+                    } else if (toSend.isNotEmpty()) {
+                        sendBatch(toSend)
                     } else {
-                        delete(position)
+                        isWaiting = true
                     }
                 } else {
                     isWaiting = true
@@ -126,14 +145,38 @@ class TrackingController(
         positionSender.sendPosition(request) { success ->
             if (success) {
                 listener?.onPositionSent(position)
-                if (buffer) {
-                    delete(position)
-                }
             } else {
                 listener?.onSendFailed(position)
-                if (buffer) {
-                    retry()
+            }
+        }
+    }
+
+    private fun sendBatch(positions: List<Position>) {
+        val requests = positions.map { ProtocolFormatter.formatRequest(serverUrl, it) }
+        positionSender.sendPositions(requests) { results ->
+            val sentIds = mutableListOf<Long>()
+            var hasFailure = false
+
+            positions.forEachIndexed { index, position ->
+                if (results[index]) {
+                    listener?.onPositionSent(position)
+                    sentIds.add(position.id)
+                } else {
+                    listener?.onSendFailed(position)
+                    hasFailure = true
                 }
+            }
+
+            if (sentIds.isNotEmpty()) {
+                deletePositions(sentIds) {
+                    if (hasFailure) {
+                        retry()
+                    } else {
+                        read()
+                    }
+                }
+            } else if (hasFailure) {
+                retry()
             }
         }
     }
@@ -142,6 +185,16 @@ class TrackingController(
         positionStore.deletePosition(position.id) { success ->
             if (success) {
                 read()
+            } else {
+                retry()
+            }
+        }
+    }
+
+    private fun deletePositions(ids: List<Long>, onDone: () -> Unit) {
+        positionStore.deletePositions(ids) { success ->
+            if (success) {
+                onDone()
             } else {
                 retry()
             }

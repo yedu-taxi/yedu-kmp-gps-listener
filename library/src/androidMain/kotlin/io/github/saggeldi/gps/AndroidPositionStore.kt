@@ -108,10 +108,58 @@ class AndroidPositionStore(
         }.start()
     }
 
+    @SuppressLint("Range")
+    override fun selectAllPositions(onComplete: (Boolean, List<Position>) -> Unit) {
+        Thread {
+            try {
+                db.rawQuery("SELECT * FROM position ORDER BY id", null).use { cursor ->
+                    val positions = mutableListOf<Position>()
+                    while (cursor.moveToNext()) {
+                        positions.add(
+                            Position(
+                                id = cursor.getLong(cursor.getColumnIndex("id")),
+                                deviceId = cursor.getString(cursor.getColumnIndex("deviceId")),
+                                time = cursor.getLong(cursor.getColumnIndex("time")),
+                                latitude = cursor.getDouble(cursor.getColumnIndex("latitude")),
+                                longitude = cursor.getDouble(cursor.getColumnIndex("longitude")),
+                                altitude = cursor.getDouble(cursor.getColumnIndex("altitude")),
+                                speed = cursor.getDouble(cursor.getColumnIndex("speed")),
+                                course = cursor.getDouble(cursor.getColumnIndex("course")),
+                                accuracy = cursor.getDouble(cursor.getColumnIndex("accuracy")),
+                                battery = BatteryStatus(
+                                    level = cursor.getDouble(cursor.getColumnIndex("battery")),
+                                    charging = cursor.getInt(cursor.getColumnIndex("charging")) > 0
+                                ),
+                                mock = cursor.getInt(cursor.getColumnIndex("mock")) > 0
+                            )
+                        )
+                    }
+                    handler.post { onComplete(true, positions) }
+                }
+            } catch (_: Exception) {
+                handler.post { onComplete(false, emptyList()) }
+            }
+        }.start()
+    }
+
     override fun deletePosition(id: Long, onComplete: (Boolean) -> Unit) {
         Thread {
             val success = try {
                 db.delete("position", "id = ?", arrayOf(id.toString())) == 1
+            } catch (_: Exception) {
+                false
+            }
+            handler.post { onComplete(success) }
+        }.start()
+    }
+
+    override fun deletePositions(ids: List<Long>, onComplete: (Boolean) -> Unit) {
+        Thread {
+            val success = try {
+                val placeholders = ids.joinToString(",") { "?" }
+                val args = ids.map { it.toString() }.toTypedArray()
+                db.delete("position", "id IN ($placeholders)", args)
+                true
             } catch (_: Exception) {
                 false
             }

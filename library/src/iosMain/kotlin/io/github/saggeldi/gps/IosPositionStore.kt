@@ -56,6 +56,16 @@ class IosPositionStore : PositionStore {
         }
     }
 
+    override fun selectAllPositions(onComplete: (Boolean, List<Position>) -> Unit) {
+        try {
+            val list = loadList()
+            val positions = list.map { mapToPosition(it) }
+            onComplete(true, positions)
+        } catch (_: Exception) {
+            onComplete(false, emptyList())
+        }
+    }
+
     override fun deletePosition(id: Long, onComplete: (Boolean) -> Unit) {
         try {
             val list = loadList().toMutableList()
@@ -66,6 +76,22 @@ class IosPositionStore : PositionStore {
                 defaults.setObject(list, forKey = storageKey)
             }
             onComplete(removed)
+        } catch (_: Exception) {
+            onComplete(false)
+        }
+    }
+
+    override fun deletePositions(ids: List<Long>, onComplete: (Boolean) -> Unit) {
+        try {
+            val idSet = ids.toSet()
+            val list = loadList().toMutableList()
+            val removed = list.removeAll { entry ->
+                toLong(entry["id"]) in idSet
+            }
+            if (removed) {
+                defaults.setObject(list, forKey = storageKey)
+            }
+            onComplete(true)
         } catch (_: Exception) {
             onComplete(false)
         }
