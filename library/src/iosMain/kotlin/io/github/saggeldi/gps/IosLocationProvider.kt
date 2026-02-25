@@ -3,8 +3,8 @@
 package io.github.saggeldi.gps
 
 import kotlinx.cinterop.useContents
-
 import platform.CoreLocation.*
+import platform.Foundation.timeIntervalSince1970
 import platform.darwin.NSObject
 
 class IosLocationProvider : PlatformLocationProvider {
