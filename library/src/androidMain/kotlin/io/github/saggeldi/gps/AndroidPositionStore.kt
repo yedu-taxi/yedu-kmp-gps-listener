@@ -17,7 +17,7 @@ class AndroidPositionStore(
     private val handler = Handler(Looper.getMainLooper())
 
     companion object {
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val DATABASE_NAME = "gps_positions.db"
     }
 
@@ -35,13 +35,22 @@ class AndroidPositionStore(
                     "accuracy REAL," +
                     "battery REAL," +
                     "charging INTEGER," +
-                    "mock INTEGER)"
+                    "mock INTEGER," +
+                    "tripId TEXT," +
+                    "tripStatus TEXT)"
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS position")
-        onCreate(db)
+        if (oldVersion < 3) {
+            try {
+                db.execSQL("ALTER TABLE position ADD COLUMN tripId TEXT")
+                db.execSQL("ALTER TABLE position ADD COLUMN tripStatus TEXT")
+            } catch (_: Exception) {
+                db.execSQL("DROP TABLE IF EXISTS position")
+                onCreate(db)
+            }
+        }
     }
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -64,6 +73,8 @@ class AndroidPositionStore(
                     put("battery", position.battery.level)
                     put("charging", if (position.battery.charging) 1 else 0)
                     put("mock", if (position.mock) 1 else 0)
+                    put("tripId", position.tripId)
+                    put("tripStatus", position.tripStatus)
                 }
                 db.insertOrThrow("position", null, values)
                 true
@@ -81,22 +92,7 @@ class AndroidPositionStore(
                 db.rawQuery("SELECT * FROM position ORDER BY id LIMIT 1", null).use { cursor ->
                     if (cursor.count > 0) {
                         cursor.moveToFirst()
-                        val position = Position(
-                            id = cursor.getLong(cursor.getColumnIndex("id")),
-                            deviceId = cursor.getString(cursor.getColumnIndex("deviceId")),
-                            time = cursor.getLong(cursor.getColumnIndex("time")),
-                            latitude = cursor.getDouble(cursor.getColumnIndex("latitude")),
-                            longitude = cursor.getDouble(cursor.getColumnIndex("longitude")),
-                            altitude = cursor.getDouble(cursor.getColumnIndex("altitude")),
-                            speed = cursor.getDouble(cursor.getColumnIndex("speed")),
-                            course = cursor.getDouble(cursor.getColumnIndex("course")),
-                            accuracy = cursor.getDouble(cursor.getColumnIndex("accuracy")),
-                            battery = BatteryStatus(
-                                level = cursor.getDouble(cursor.getColumnIndex("battery")),
-                                charging = cursor.getInt(cursor.getColumnIndex("charging")) > 0
-                            ),
-                            mock = cursor.getInt(cursor.getColumnIndex("mock")) > 0
-                        )
+                        val position = cursorToPosition(cursor)
                         handler.post { onComplete(true, position) }
                     } else {
                         handler.post { onComplete(true, null) }
@@ -115,24 +111,7 @@ class AndroidPositionStore(
                 db.rawQuery("SELECT * FROM position ORDER BY id", null).use { cursor ->
                     val positions = mutableListOf<Position>()
                     while (cursor.moveToNext()) {
-                        positions.add(
-                            Position(
-                                id = cursor.getLong(cursor.getColumnIndex("id")),
-                                deviceId = cursor.getString(cursor.getColumnIndex("deviceId")),
-                                time = cursor.getLong(cursor.getColumnIndex("time")),
-                                latitude = cursor.getDouble(cursor.getColumnIndex("latitude")),
-                                longitude = cursor.getDouble(cursor.getColumnIndex("longitude")),
-                                altitude = cursor.getDouble(cursor.getColumnIndex("altitude")),
-                                speed = cursor.getDouble(cursor.getColumnIndex("speed")),
-                                course = cursor.getDouble(cursor.getColumnIndex("course")),
-                                accuracy = cursor.getDouble(cursor.getColumnIndex("accuracy")),
-                                battery = BatteryStatus(
-                                    level = cursor.getDouble(cursor.getColumnIndex("battery")),
-                                    charging = cursor.getInt(cursor.getColumnIndex("charging")) > 0
-                                ),
-                                mock = cursor.getInt(cursor.getColumnIndex("mock")) > 0
-                            )
-                        )
+                        positions.add(cursorToPosition(cursor))
                     }
                     handler.post { onComplete(true, positions) }
                 }
@@ -165,5 +144,29 @@ class AndroidPositionStore(
             }
             handler.post { onComplete(success) }
         }.start()
+    }
+
+    @SuppressLint("Range")
+    private fun cursorToPosition(cursor: android.database.Cursor): Position {
+        val tripIdIdx = cursor.getColumnIndex("tripId")
+        val tripStatusIdx = cursor.getColumnIndex("tripStatus")
+        return Position(
+            id = cursor.getLong(cursor.getColumnIndex("id")),
+            deviceId = cursor.getString(cursor.getColumnIndex("deviceId")),
+            time = cursor.getLong(cursor.getColumnIndex("time")),
+            latitude = cursor.getDouble(cursor.getColumnIndex("latitude")),
+            longitude = cursor.getDouble(cursor.getColumnIndex("longitude")),
+            altitude = cursor.getDouble(cursor.getColumnIndex("altitude")),
+            speed = cursor.getDouble(cursor.getColumnIndex("speed")),
+            course = cursor.getDouble(cursor.getColumnIndex("course")),
+            accuracy = cursor.getDouble(cursor.getColumnIndex("accuracy")),
+            battery = BatteryStatus(
+                level = cursor.getDouble(cursor.getColumnIndex("battery")),
+                charging = cursor.getInt(cursor.getColumnIndex("charging")) > 0
+            ),
+            mock = cursor.getInt(cursor.getColumnIndex("mock")) > 0,
+            tripId = if (tripIdIdx >= 0) cursor.getString(tripIdIdx) else null,
+            tripStatus = if (tripStatusIdx >= 0) cursor.getString(tripStatusIdx) else null
+        )
     }
 }

@@ -1,5 +1,6 @@
 package io.github.saggeldi.gps
 
+import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.*
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
@@ -33,6 +34,36 @@ class IosPositionSender : PositionSender {
                 }
             }
         }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean) -> Unit) {
+        val nsUrl = NSURL.URLWithString(url)
+        if (nsUrl == null) {
+            onComplete(false)
+            return
+        }
+        val urlRequest = NSMutableURLRequest(
+            uRL = nsUrl,
+            cachePolicy = NSURLRequestReloadIgnoringLocalCacheData,
+            timeoutInterval = 15.0
+        )
+        urlRequest.setHTTPMethod("POST")
+        urlRequest.setValue("application/json", forHTTPHeaderField = "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField = "Accept")
+        if (token != null) {
+            urlRequest.setValue("Bearer $token", forHTTPHeaderField = "Authorization")
+        }
+        val bodyData = jsonBody.encodeToByteArray()
+        urlRequest.setHTTPBody(NSString.create(string = jsonBody).dataUsingEncoding(NSUTF8StringEncoding))
+
+        NSURLSession.sharedSession.dataTaskWithRequest(urlRequest) { data, response, error ->
+            val httpResponse = response as? NSHTTPURLResponse
+            val success = error == null && httpResponse != null && httpResponse.statusCode in 200..299
+            dispatch_async(dispatch_get_main_queue()) {
+                onComplete(success)
+            }
+        }.resume()
     }
 
     private fun sendSingle(request: String, onComplete: (Boolean) -> Unit) {

@@ -45,3 +45,35 @@ fun GpsFactory.createTrackingController(
         listener = listener
     )
 }
+
+/**
+ * Create a TrackingController that sends positions as JSON POST
+ * to the Yedu backend API (trips/driver-location endpoint).
+ *
+ * @param baseUrl The base URL of the API (e.g. "https://api.example.com/api/v1")
+ * @param token Initial Bearer token (can be changed at runtime via controller.token)
+ * @param buffer Whether to buffer positions offline
+ * @param listener Optional listener for position events
+ */
+fun GpsFactory.createApiTrackingController(
+    baseUrl: String,
+    token: String? = null,
+    buffer: Boolean = true,
+    listener: TrackingControllerListener? = null
+): TrackingController {
+    val apiEndpoint = "${baseUrl.trimEnd('/')}/trips/driver-location"
+    val controller = TrackingController(
+        locationProvider = createLocationProvider(),
+        positionStore = createPositionStore(),
+        positionSender = createPositionSender(),
+        networkMonitor = createNetworkMonitor(),
+        retryScheduler = createRetryScheduler(),
+        serverUrl = baseUrl,
+        buffer = buffer,
+        listener = listener,
+        useJsonApi = true,
+        apiEndpoint = apiEndpoint
+    )
+    controller.token = token
+    return controller
+}

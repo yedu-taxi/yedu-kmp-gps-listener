@@ -19,7 +19,7 @@ class IosPositionStore : PositionStore {
         try {
             val list = loadList().toMutableList()
             val id = getNextId()
-            val entry = mapOf<String, Any>(
+            val entry = mutableMapOf<String, Any>(
                 "id" to id,
                 "deviceId" to position.deviceId,
                 "time" to position.time,
@@ -33,6 +33,8 @@ class IosPositionStore : PositionStore {
                 "batteryCharging" to position.battery.charging,
                 "mock" to position.mock
             )
+            position.tripId?.let { entry["tripId"] = it }
+            position.tripStatus?.let { entry["tripStatus"] = it }
             list.add(entry)
             defaults.setObject(list, forKey = storageKey)
             onComplete(true)
@@ -118,7 +120,9 @@ class IosPositionStore : PositionStore {
                 level = toDouble(map["batteryLevel"]),
                 charging = toBoolean(map["batteryCharging"])
             ),
-            mock = toBoolean(map["mock"])
+            mock = toBoolean(map["mock"]),
+            tripId = map["tripId"] as? String,
+            tripStatus = map["tripStatus"] as? String
         )
     }
 
