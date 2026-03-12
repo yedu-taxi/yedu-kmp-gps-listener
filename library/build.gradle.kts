@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.saggeldi"
-version = "0.0.8"
+version = "0.0.9"
 
 kotlin {
     compilerOptions {

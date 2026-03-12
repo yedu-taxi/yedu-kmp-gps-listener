@@ -311,6 +311,96 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 ---
 
+## Trip Tracking
+
+`TripTracker` tracks distance and time for the current trip, per-status segments, and detects when the driver has stopped (GPS pause detection).
+
+### Basic Trip Lifecycle
+
+```kotlin
+val tripTracker = TripTracker()
+
+// Set a listener for stats updates and pause/resume events
+tripTracker.setListener(object : TripTrackerListener {
+    override fun onTripStatsUpdated(stats: TripStats) {
+        println("Distance: ${stats.totalDistanceKm} km (${stats.totalDistanceMeters} m)")
+        println("Time: ${stats.totalTimeSeconds}s (${stats.totalTimeMinutes} min)")
+    }
+    override fun onTripEnded(stats: TripStats) {
+        println("Trip ended: ${stats.totalDistanceKm} km")
+    }
+    override fun onDriverPaused() {
+        println("Driver has stopped")
+    }
+    override fun onDriverResumed() {
+        println("Driver is moving again")
+    }
+})
+
+// Start a trip with an ID and initial status
+tripTracker.startTrip("trip-123", "accepted")
+
+// Update status as the trip progresses
+tripTracker.updateStatus("en_route")
+tripTracker.updateStatus("arrived")
+tripTracker.updateStatus("in_progress")
+
+// Feed GPS positions (called from your GPS listener)
+tripTracker.updatePosition(position)
+
+// End the trip — triggers onTripEnded with final stats
+tripTracker.endTrip()
+```
+
+### Per-Status Statistics
+
+Every status change is tracked. Access historical stats for any status via `statusHistory`:
+
+```kotlin
+val stats = tripTracker.getTripStats()
+
+// Get stats for a specific status
+val enRouteStats = stats.statsForStatus("en_route")
+if (enRouteStats != null) {
+    println("en_route: ${enRouteStats.distanceKm} km, ${enRouteStats.timeMinutes} min")
+}
+
+// Iterate all statuses
+for ((statusName, statusStats) in stats.statusHistory) {
+    println("$statusName: ${statusStats.distanceMeters}m in ${statusStats.timeSeconds}s")
+}
+```
+
+If a status is revisited (e.g., switching back to "driving" after "waiting"), the distance and time accumulate across all periods in that status.
+
+### GPS Pause Detection
+
+TripTracker detects when the driver's car has stopped by monitoring GPS position changes:
+
+```kotlin
+val tripTracker = TripTracker()
+
+// Configure thresholds (defaults: 2m distance, 15s time)
+tripTracker.pauseDistanceThresholdMeters = 5.0   // movement within 5m = "not moving"
+tripTracker.pauseTimeThresholdSeconds = 20L       // must be stationary for 20s to trigger pause
+
+// Access pause state in stats
+val stats = tripTracker.getTripStats()
+println("Currently paused: ${stats.isPaused}")
+println("Total stopped time: ${stats.totalStoppingSeconds}s")
+```
+
+### Trip Tracking Types
+
+| Type | Description |
+|------|-------------|
+| `TripTracker` | Main tracker class. Constructor accepts optional `timeProvider` for testing |
+| `TripStats` | Trip statistics snapshot with totals, per-status history, and pause info |
+| `StatusStats` | Per-status statistics: `distanceKm`, `distanceMeters`, `timeSeconds`, `timeMinutes` |
+| `TripTrackerListener` | Callbacks: `onTripStatsUpdated()`, `onTripEnded()`, `onDriverPaused()`, `onDriverResumed()` |
+
+---
+
 ## Runtime Configuration
 
 ```kotlin
