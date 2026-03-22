@@ -6,6 +6,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.SystemClock
 
 class AndroidLocationProvider(
     private val context: Context
@@ -18,6 +19,8 @@ class AndroidLocationProvider(
 
     companion object {
         private const val MINIMUM_INTERVAL_MS = 1000L
+        /** Reject GPS fixes older than this many seconds. */
+        private const val MAX_LOCATION_AGE_SECONDS = 10L
     }
 
     @SuppressLint("MissingPermission")
@@ -40,6 +43,7 @@ class AndroidLocationProvider(
 
         locationListener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
+                if (isLocationStale(location)) return
                 val battery = batteryProvider.getBatteryStatus()
                 val position = location.toPosition(config.deviceId, battery)
                 onLocation(position)
@@ -77,9 +81,9 @@ class AndroidLocationProvider(
     ) {
         try {
             val lastLocation =
-                locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-                    ?: locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-            if (lastLocation != null) {
+                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            if (lastLocation != null && !isLocationStale(lastLocation)) {
                 val battery = batteryProvider.getBatteryStatus()
                 onLocation(lastLocation.toPosition(config.deviceId, battery))
             }
@@ -87,10 +91,20 @@ class AndroidLocationProvider(
         }
     }
 
+    /**
+     * Reject locations whose GPS fix is older than [MAX_LOCATION_AGE_SECONDS].
+     * Uses elapsed-realtime clock which is immune to wall-clock adjustments.
+     */
+    private fun isLocationStale(location: Location): Boolean {
+        val ageNanos = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+        val ageSeconds = ageNanos / 1_000_000_000L
+        return ageSeconds > MAX_LOCATION_AGE_SECONDS
+    }
+
     private fun Location.toPosition(deviceId: String, battery: BatteryStatus): Position {
         return Position(
             deviceId = deviceId,
-            time = System.currentTimeMillis(),
+            time = time,
             latitude = latitude,
             longitude = longitude,
             altitude = altitude,
