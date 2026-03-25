@@ -39,20 +39,12 @@ actual object GpsFactory {
         return AndroidBatteryProvider(requireContext())
     }
 
-    actual fun createPositionStore(): PositionStore {
-        return AndroidPositionStore(requireContext())
-    }
-
     actual fun createPositionSender(): PositionSender {
         return AndroidPositionSender()
     }
 
     actual fun createNetworkMonitor(): NetworkMonitor {
         return AndroidNetworkMonitor(requireContext())
-    }
-
-    actual fun createRetryScheduler(): RetryScheduler {
-        return AndroidRetryScheduler()
     }
 
     actual fun createLocationPermissionHelper(): LocationPermissionHelper {

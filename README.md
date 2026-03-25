@@ -1,16 +1,15 @@
 # Yedu KMP GPS Listener
 
-A **headless** (no UI) Kotlin Multiplatform library that provides background GPS location listening with offline caching on Android and iOS. Ported from the Traccar GPS tracking clients for both platforms.
+A **headless** (no UI) Kotlin Multiplatform library that provides background GPS location listening on Android and iOS. Ported from the Traccar GPS tracking clients for both platforms.
 
 ## Features
 
 - Background GPS location listening on Android and iOS
 - Position filtering by interval, distance, and angle
 - Battery status reporting alongside each position
-- **Offline position caching** with SQLite (Android) / NSUserDefaults (iOS)
-- **Automatic position sending** to server with retry logic
-- **Network monitoring** with automatic send on reconnect
-- **TrackingController** - full state machine (write -> read -> send -> delete -> retry)
+- **Realtime position sending** to server when online
+- **Network monitoring** — only sends when connected
+- **TrackingController** — GPS + network monitoring + HTTP sending pipeline
 - **ProtocolFormatter** - OsmAnd/Traccar-compatible URL formatting
 - **Location permission helpers** - check, request, and open settings (cross-platform)
 - Callback-based API (no coroutines dependency)
@@ -56,10 +55,9 @@ class MyApp : Application() {
 val tracker = GpsFactory.createGpsTracker(myListener)
 tracker.start(config)
 
-// Full pipeline mode (GPS + caching + sending + retry)
+// Full pipeline mode (GPS + network monitoring + sending)
 val controller = GpsFactory.createTrackingController(
     serverUrl = "https://your-server.com:5055",
-    buffer = true,
     listener = myControllerListener
 )
 controller.start(config)
@@ -84,7 +82,7 @@ Both modes can coexist. Use `GpsFactory` for convenience, or construct manually 
 ## Two API Levels
 
 1. **`GpsTracker`** - GPS-only listener. You receive positions and decide what to do with them.
-2. **`TrackingController`** - Full pipeline. GPS + offline caching + network monitoring + HTTP sending + retry logic. Handles everything automatically.
+2. **`TrackingController`** - Full pipeline. GPS + network monitoring + realtime HTTP sending. Sends latest position when online, drops when offline.
 
 ---
 
@@ -185,17 +183,9 @@ class MyGpsListener: GpsTrackerListener {
 
 ## Mode 2: TrackingController (Full Pipeline)
 
-Use this when you want automatic offline caching, HTTP sending, and retry - like the original Traccar clients.
+Use this when you want automatic realtime position sending with network awareness.
 
-The state machine works as follows:
-```
-GPS position received
-    -> write to local database
-    -> if online: read from database -> send to server -> delete from database -> read next
-    -> if offline: positions accumulate in database
-    -> on network reconnect: read -> send -> delete -> read next
-    -> on send failure: retry after 30 seconds
-```
+When online, positions are sent immediately to the server via HTTP. When offline, positions are dropped (no local caching).
 
 ### Android
 
@@ -216,19 +206,15 @@ class MyTrackingService : Service() {
         // Option A: Common factory (requires GpsFactory.initialize(context) in Application)
         controller = GpsFactory.createTrackingController(
             serverUrl = "https://your-server.com:5055",
-            buffer = true,
             listener = controllerListener
         )
 
         // Option B: Direct platform constructors
         // controller = TrackingController(
         //     locationProvider = AndroidLocationProvider(this),
-        //     positionStore = AndroidPositionStore(this),
         //     positionSender = AndroidPositionSender(),
         //     networkMonitor = AndroidNetworkMonitor(this),
-        //     retryScheduler = AndroidRetryScheduler(),
         //     serverUrl = "https://your-server.com:5055",
-        //     buffer = true,
         //     listener = controllerListener
         // )
 
@@ -247,7 +233,7 @@ class MyTrackingService : Service() {
             Log.d("GPS", "Sent to server")
         }
         override fun onSendFailed(position: Position) {
-            Log.w("GPS", "Send failed, will retry")
+            Log.w("GPS", "Send failed")
         }
         override fun onError(error: String) {
             Log.e("GPS", error)
@@ -286,12 +272,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
         let ctrl = TrackingController(
             locationProvider: IosLocationProvider(),
-            positionStore: IosPositionStore(),
             positionSender: IosPositionSender(),
             networkMonitor: IosNetworkMonitor(),
-            retryScheduler: IosRetryScheduler(),
             serverUrl: "https://your-server.com:5055",
-            buffer: true,
             listener: nil  // or provide a TrackingControllerListener
         )
 
@@ -451,13 +434,11 @@ tracker.stop()
 
 | Type | Name | Description |
 |------|------|-------------|
-| Class | `TrackingController` | Full pipeline: GPS + caching + sending + retry |
+| Class | `TrackingController` | Full pipeline: GPS + network monitoring + realtime sending |
 | Interface | `TrackingControllerListener` | Callbacks: position events + send/fail events |
 | Object | `ProtocolFormatter` | OsmAnd/Traccar URL formatting |
-| Interface | `PositionStore` | Local position database |
 | Interface | `PositionSender` | HTTP position sending |
 | Interface | `NetworkMonitor` | Network connectivity monitoring |
-| Interface | `RetryScheduler` | Delayed retry execution |
 
 ### Platform Implementations
 
@@ -465,17 +446,15 @@ tracker.stop()
 |-----------|---------|-----|
 | Location Provider | `AndroidLocationProvider(context)` | `IosLocationProvider()` |
 | Battery Provider | `AndroidBatteryProvider(context)` | `IosBatteryProvider()` |
-| Position Store | `AndroidPositionStore(context)` | `IosPositionStore()` |
 | Position Sender | `AndroidPositionSender()` | `IosPositionSender()` |
 | Network Monitor | `AndroidNetworkMonitor(context)` | `IosNetworkMonitor()` |
-| Retry Scheduler | `AndroidRetryScheduler()` | `IosRetryScheduler()` |
 | Permission Helper | `AndroidLocationPermissionHelper(context)` | `IosLocationPermissionHelper()` |
 
 ### Position Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `Long` | Database ID (0 if not persisted) |
+| `id` | `Long` | Position ID (default 0) |
 | `deviceId` | `String` | Device identifier |
 | `time` | `Instant` | Timestamp (kotlinx-datetime) |
 | `latitude` | `Double` | Latitude in degrees |

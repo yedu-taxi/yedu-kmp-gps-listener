@@ -18,10 +18,8 @@ package io.github.saggeldi.gps
 expect object GpsFactory {
     fun createLocationProvider(): PlatformLocationProvider
     fun createBatteryProvider(): PlatformBatteryProvider
-    fun createPositionStore(): PositionStore
     fun createPositionSender(): PositionSender
     fun createNetworkMonitor(): NetworkMonitor
-    fun createRetryScheduler(): RetryScheduler
     fun createLocationPermissionHelper(): LocationPermissionHelper
 }
 
@@ -31,17 +29,13 @@ fun GpsFactory.createGpsTracker(listener: GpsTrackerListener): GpsTracker {
 
 fun GpsFactory.createTrackingController(
     serverUrl: String,
-    buffer: Boolean = true,
     listener: TrackingControllerListener? = null
 ): TrackingController {
     return TrackingController(
         locationProvider = createLocationProvider(),
-        positionStore = createPositionStore(),
         positionSender = createPositionSender(),
         networkMonitor = createNetworkMonitor(),
-        retryScheduler = createRetryScheduler(),
         serverUrl = serverUrl,
-        buffer = buffer,
         listener = listener
     )
 }
@@ -52,24 +46,19 @@ fun GpsFactory.createTrackingController(
  *
  * @param baseUrl The base URL of the API (e.g. "https://api.example.com/api/v1")
  * @param token Initial Bearer token (can be changed at runtime via controller.token)
- * @param buffer Whether to buffer positions offline
  * @param listener Optional listener for position events
  */
 fun GpsFactory.createApiTrackingController(
     baseUrl: String,
     token: String? = null,
-    buffer: Boolean = true,
     listener: TrackingControllerListener? = null
 ): TrackingController {
     val apiEndpoint = "${baseUrl.trimEnd('/')}/trips/driver-location"
     val controller = TrackingController(
         locationProvider = createLocationProvider(),
-        positionStore = createPositionStore(),
         positionSender = createPositionSender(),
         networkMonitor = createNetworkMonitor(),
-        retryScheduler = createRetryScheduler(),
         serverUrl = baseUrl,
-        buffer = buffer,
         listener = listener,
         useJsonApi = true,
         apiEndpoint = apiEndpoint

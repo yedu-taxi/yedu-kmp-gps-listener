@@ -10,20 +10,12 @@ actual object GpsFactory {
         return IosBatteryProvider()
     }
 
-    actual fun createPositionStore(): PositionStore {
-        return IosPositionStore()
-    }
-
     actual fun createPositionSender(): PositionSender {
         return IosPositionSender()
     }
 
     actual fun createNetworkMonitor(): NetworkMonitor {
         return IosNetworkMonitor()
-    }
-
-    actual fun createRetryScheduler(): RetryScheduler {
-        return IosRetryScheduler()
     }
 
     actual fun createLocationPermissionHelper(): LocationPermissionHelper {

@@ -37,62 +37,6 @@ private class FakeLocationProvider : PlatformLocationProvider {
     fun emitError(error: String) { onError?.invoke(error) }
 }
 
-private class FakePositionStore : PositionStore {
-    val positions = mutableListOf<Position>()
-    private var nextId = 1L
-    var insertFailNext = false
-    var selectFailNext = false
-    var deleteFailNext = false
-
-    override fun insertPosition(position: Position, onComplete: (Boolean) -> Unit) {
-        if (insertFailNext) {
-            insertFailNext = false
-            onComplete(false)
-            return
-        }
-        positions.add(position.copy(id = nextId++))
-        onComplete(true)
-    }
-
-    override fun selectFirstPosition(onComplete: (success: Boolean, position: Position?) -> Unit) {
-        if (selectFailNext) {
-            selectFailNext = false
-            onComplete(false, null)
-            return
-        }
-        onComplete(true, positions.firstOrNull())
-    }
-
-    override fun selectAllPositions(onComplete: (success: Boolean, positions: List<Position>) -> Unit) {
-        if (selectFailNext) {
-            selectFailNext = false
-            onComplete(false, emptyList())
-            return
-        }
-        onComplete(true, positions.toList())
-    }
-
-    override fun deletePosition(id: Long, onComplete: (Boolean) -> Unit) {
-        if (deleteFailNext) {
-            deleteFailNext = false
-            onComplete(false)
-            return
-        }
-        positions.removeAll { it.id == id }
-        onComplete(true)
-    }
-
-    override fun deletePositions(ids: List<Long>, onComplete: (Boolean) -> Unit) {
-        if (deleteFailNext) {
-            deleteFailNext = false
-            onComplete(false)
-            return
-        }
-        positions.removeAll { it.id in ids }
-        onComplete(true)
-    }
-}
-
 private class FakePositionSender : PositionSender {
     var sendSuccess = true
     var sentRequests = mutableListOf<String>()
@@ -134,20 +78,6 @@ private class FakeNetworkMonitor(private var online: Boolean = true) : NetworkMo
     }
 }
 
-private class FakeRetryScheduler : RetryScheduler {
-    val scheduledActions = mutableListOf<() -> Unit>()
-
-    override fun schedule(delayMs: Long, action: () -> Unit) {
-        scheduledActions.add(action)
-    }
-
-    fun executeAll() {
-        val actions = scheduledActions.toList()
-        scheduledActions.clear()
-        actions.forEach { it() }
-    }
-}
-
 private class CollectingControllerListener : TrackingControllerListener {
     val updatedPositions = mutableListOf<Position>()
     val sentPositions = mutableListOf<Position>()
@@ -170,23 +100,17 @@ class TrackingControllerTest {
 
     private fun createController(
         provider: FakeLocationProvider = FakeLocationProvider(),
-        store: FakePositionStore = FakePositionStore(),
         sender: FakePositionSender = FakePositionSender(),
         networkMonitor: FakeNetworkMonitor = FakeNetworkMonitor(online = true),
-        retryScheduler: FakeRetryScheduler = FakeRetryScheduler(),
         serverUrl: String = "https://example.com/api",
-        buffer: Boolean = true,
         listener: TrackingControllerListener? = null,
         useJsonApi: Boolean = false,
         apiEndpoint: String? = null
     ) = TrackingController(
         locationProvider = provider,
-        positionStore = store,
         positionSender = sender,
         networkMonitor = networkMonitor,
-        retryScheduler = retryScheduler,
         serverUrl = serverUrl,
-        buffer = buffer,
         listener = listener,
         useJsonApi = useJsonApi,
         apiEndpoint = apiEndpoint
@@ -245,66 +169,43 @@ class TrackingControllerTest {
         assertTrue(listener.statusChanges.contains(TrackerStatus.STOPPED))
     }
 
-    // ── Buffered mode (buffer = true) ───────────────────────────────────
+    // ── Realtime sending when online ────────────────────────────────────
 
     @Test
-    fun bufferedModeStoresPositionOnUpdate() {
+    fun sendsPositionDirectlyWhenOnline() {
         val provider = FakeLocationProvider()
-        val store = FakePositionStore()
+        val sender = FakePositionSender()
+        val controller = createController(provider = provider, sender = sender)
+
+        controller.start(defaultConfig)
+        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
+
+        assertEquals(1, sender.sentRequests.size)
+    }
+
+    @Test
+    fun doesNotSendPositionWhenOffline() {
+        val provider = FakeLocationProvider()
+        val sender = FakePositionSender()
         val networkMonitor = FakeNetworkMonitor(online = false)
         val controller = createController(
-            provider = provider, store = store,
-            networkMonitor = networkMonitor, buffer = true
+            provider = provider, sender = sender, networkMonitor = networkMonitor
         )
 
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
-        // Offline, so position stays in store
-        assertEquals(1, store.positions.size)
+        assertEquals(0, sender.sentRequests.size)
+        assertEquals(0, sender.sentJsonBodies.size)
     }
 
     @Test
-    fun bufferedModeSendsStoredPositionsWhenOnline() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val sender = FakePositionSender()
-        val controller = createController(
-            provider = provider, store = store, sender = sender,
-            buffer = true
-        )
-
-        controller.start(defaultConfig)
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-
-        // Positions should be stored and then sent
-        assertTrue(sender.sentRequests.isNotEmpty() || store.positions.isEmpty())
-    }
-
-    @Test
-    fun bufferedModeDeletesPositionAfterSuccessfulSend() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val sender = FakePositionSender()
-        sender.sendSuccess = true
-        val controller = createController(
-            provider = provider, store = store, sender = sender,
-            buffer = true
-        )
-
-        controller.start(defaultConfig)
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-
-        // After successful send, positions should be deleted from store
-        assertTrue(store.positions.isEmpty())
-    }
-
-    @Test
-    fun bufferedModeListenerReceivesPositionUpdate() {
+    fun listenerReceivesPositionUpdateEvenWhenOffline() {
         val provider = FakeLocationProvider()
         val listener = CollectingControllerListener()
+        val networkMonitor = FakeNetworkMonitor(online = false)
         val controller = createController(
-            provider = provider, listener = listener, buffer = true
+            provider = provider, listener = listener, networkMonitor = networkMonitor
         )
 
         controller.start(defaultConfig)
@@ -314,14 +215,13 @@ class TrackingControllerTest {
     }
 
     @Test
-    fun bufferedModeListenerNotifiedOnSentPosition() {
+    fun listenerNotifiedOnSentPosition() {
         val provider = FakeLocationProvider()
         val sender = FakePositionSender()
         sender.sendSuccess = true
         val listener = CollectingControllerListener()
         val controller = createController(
-            provider = provider, sender = sender,
-            listener = listener, buffer = true
+            provider = provider, sender = sender, listener = listener
         )
 
         controller.start(defaultConfig)
@@ -330,35 +230,33 @@ class TrackingControllerTest {
         assertEquals(1, listener.sentPositions.size)
     }
 
-    // ── Non-buffered mode (buffer = false) ──────────────────────────────
-
     @Test
-    fun nonBufferedModeSendsDirectly() {
+    fun sendFailureNotifiesListener() {
         val provider = FakeLocationProvider()
-        val store = FakePositionStore()
         val sender = FakePositionSender()
+        sender.sendSuccess = false
+        val listener = CollectingControllerListener()
         val controller = createController(
-            provider = provider, store = store, sender = sender,
-            buffer = false
+            provider = provider, sender = sender, listener = listener
         )
 
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
-        // Should send directly without storing
-        assertEquals(0, store.positions.size)
-        assertEquals(1, sender.sentRequests.size)
+        assertEquals(1, listener.failedPositions.size)
+        assertEquals(0, listener.sentPositions.size)
     }
 
+    // ── Legacy vs JSON sending ──────────────────────────────────────────
+
     @Test
-    fun nonBufferedModeLegacySend() {
+    fun legacySendUsesUrlFormat() {
         val provider = FakeLocationProvider()
         val sender = FakePositionSender()
         val listener = CollectingControllerListener()
         val controller = createController(
             provider = provider, sender = sender,
-            serverUrl = "https://example.com/api",
-            buffer = false, listener = listener
+            serverUrl = "https://example.com/api", listener = listener
         )
 
         controller.start(defaultConfig)
@@ -370,13 +268,13 @@ class TrackingControllerTest {
     }
 
     @Test
-    fun nonBufferedModeJsonSend() {
+    fun jsonSendUsesJsonBody() {
         val provider = FakeLocationProvider()
         val sender = FakePositionSender()
         val listener = CollectingControllerListener()
         val controller = createController(
             provider = provider, sender = sender,
-            buffer = false, listener = listener,
+            listener = listener,
             useJsonApi = true, apiEndpoint = "https://api.example.com/v1/location"
         )
         controller.token = "my-token"
@@ -387,24 +285,6 @@ class TrackingControllerTest {
         assertEquals(1, sender.sentJsonBodies.size)
         assertEquals("my-token", sender.lastToken)
         assertEquals(1, listener.sentPositions.size)
-    }
-
-    @Test
-    fun nonBufferedModeSendFailureNotifiesListener() {
-        val provider = FakeLocationProvider()
-        val sender = FakePositionSender()
-        sender.sendSuccess = false
-        val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, sender = sender,
-            buffer = false, listener = listener
-        )
-
-        controller.start(defaultConfig)
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-
-        assertEquals(1, listener.failedPositions.size)
-        assertEquals(0, listener.sentPositions.size)
     }
 
     // ── Error forwarding ────────────────────────────────────────────────
@@ -425,20 +305,26 @@ class TrackingControllerTest {
     // ── Network awareness ───────────────────────────────────────────────
 
     @Test
-    fun retryScheduledOnSendFailure() {
+    fun sendsWhenComingBackOnline() {
         val provider = FakeLocationProvider()
         val sender = FakePositionSender()
-        sender.sendSuccess = false
-        val retryScheduler = FakeRetryScheduler()
+        val networkMonitor = FakeNetworkMonitor(online = false)
         val controller = createController(
-            provider = provider, sender = sender,
-            retryScheduler = retryScheduler, buffer = true
+            provider = provider, sender = sender, networkMonitor = networkMonitor
         )
 
         controller.start(defaultConfig)
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
-        assertTrue(retryScheduler.scheduledActions.isNotEmpty())
+        // Position while offline - not sent
+        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
+        assertEquals(0, sender.sentRequests.size)
+
+        // Go online
+        networkMonitor.setOnline(true)
+
+        // Next position should be sent
+        provider.emit(Position(deviceId = "test-device", time = epochMs(200)))
+        assertEquals(1, sender.sentRequests.size)
     }
 
     // ── Config update ───────────────────────────────────────────────────
@@ -464,9 +350,7 @@ class TrackingControllerTest {
     fun tripInfoAttachedToPosition() {
         val provider = FakeLocationProvider()
         val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, listener = listener, buffer = true
-        )
+        val controller = createController(provider = provider, listener = listener)
 
         controller.start(defaultConfig)
         controller.startTrip("trip-1", "en_route")
@@ -481,9 +365,7 @@ class TrackingControllerTest {
     fun positionWithoutTripHasNullTripFields() {
         val provider = FakeLocationProvider()
         val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, listener = listener, buffer = true
-        )
+        val controller = createController(provider = provider, listener = listener)
 
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
@@ -497,9 +379,7 @@ class TrackingControllerTest {
     fun tripStatusUpdateReflectedInPositions() {
         val provider = FakeLocationProvider()
         val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, listener = listener, buffer = true
-        )
+        val controller = createController(provider = provider, listener = listener)
 
         controller.start(defaultConfig)
         controller.startTrip("trip-1", "en_route")
@@ -517,9 +397,7 @@ class TrackingControllerTest {
     fun endTripClearsTripFieldsFromPositions() {
         val provider = FakeLocationProvider()
         val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, listener = listener, buffer = true
-        )
+        val controller = createController(provider = provider, listener = listener)
 
         controller.start(defaultConfig)
         controller.startTrip("trip-1", "en_route")
@@ -552,7 +430,7 @@ class TrackingControllerTest {
         val sender = FakePositionSender()
         val controller = createController(
             provider = provider, sender = sender,
-            buffer = false, useJsonApi = true,
+            useJsonApi = true,
             apiEndpoint = "https://api.example.com/v1/location"
         )
 
@@ -569,7 +447,7 @@ class TrackingControllerTest {
         val sender = FakePositionSender()
         val controller = createController(
             provider = provider, sender = sender,
-            buffer = false, useJsonApi = true,
+            useJsonApi = true,
             apiEndpoint = "https://api.example.com/v1/location"
         )
 
@@ -589,7 +467,7 @@ class TrackingControllerTest {
         val sender = FakePositionSender()
         val controller = createController(
             provider = provider, sender = sender,
-            buffer = false, useJsonApi = true,
+            useJsonApi = true,
             apiEndpoint = "https://api.example.com/v1/location"
         )
 
@@ -597,116 +475,5 @@ class TrackingControllerTest {
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
         assertNull(sender.lastToken)
-    }
-
-    // ── Batch sending (buffered + legacy) ───────────────────────────────
-
-    @Test
-    fun batchLegacySendsAllStoredPositions() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val sender = FakePositionSender()
-        val networkMonitor = FakeNetworkMonitor(online = false)
-        val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, store = store, sender = sender,
-            networkMonitor = networkMonitor, buffer = true,
-            listener = listener
-        )
-
-        controller.start(defaultConfig)
-
-        // Emit positions while offline
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-        provider.emit(Position(deviceId = "test-device", time = epochMs(200)))
-
-        assertEquals(2, store.positions.size)
-        assertEquals(0, sender.sentRequests.size)
-
-        // Go online triggers batch send
-        networkMonitor.setOnline(true)
-
-        // After going online, positions should be sent
-        assertTrue(sender.sentRequests.size >= 2)
-    }
-
-    @Test
-    fun batchJsonSendsAllStoredPositions() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val sender = FakePositionSender()
-        val networkMonitor = FakeNetworkMonitor(online = false)
-        val listener = CollectingControllerListener()
-        val controller = createController(
-            provider = provider, store = store, sender = sender,
-            networkMonitor = networkMonitor, buffer = true,
-            listener = listener, useJsonApi = true,
-            apiEndpoint = "https://api.example.com/v1/location"
-        )
-        controller.token = "test-token"
-
-        controller.start(defaultConfig)
-
-        // Emit positions while offline
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-        provider.emit(Position(deviceId = "test-device", time = epochMs(200)))
-
-        assertEquals(2, store.positions.size)
-        assertEquals(0, sender.sentJsonBodies.size)
-
-        // Go online triggers batch send
-        networkMonitor.setOnline(true)
-
-        assertTrue(sender.sentJsonBodies.size >= 2)
-    }
-
-    // ── Device ID filtering in read ─────────────────────────────────────
-
-    @Test
-    fun positionsFromDifferentDeviceDeletedNotSent() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val sender = FakePositionSender()
-        val networkMonitor = FakeNetworkMonitor(online = false)
-        val controller = createController(
-            provider = provider, store = store, sender = sender,
-            networkMonitor = networkMonitor, buffer = true
-        )
-
-        controller.start(defaultConfig)
-
-        // Manually insert a position from a different device
-        store.positions.add(Position(id = 99, deviceId = "other-device", time = epochMs(50)))
-        // Emit position from current device
-        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
-
-        // Go online
-        networkMonitor.setOnline(true)
-
-        // "other-device" position should be deleted, not sent
-        val remainingDeviceIds = store.positions.map { it.deviceId }
-        assertFalse(remainingDeviceIds.contains("other-device"))
-    }
-
-    // ── Retry on store failure ──────────────────────────────────────────
-
-    @Test
-    fun retryScheduledOnSelectFailure() {
-        val provider = FakeLocationProvider()
-        val store = FakePositionStore()
-        val retryScheduler = FakeRetryScheduler()
-        val networkMonitor = FakeNetworkMonitor(online = true)
-        val controller = createController(
-            provider = provider, store = store,
-            retryScheduler = retryScheduler,
-            networkMonitor = networkMonitor, buffer = true
-        )
-
-        // Make the first select fail
-        store.selectFailNext = true
-        controller.start(defaultConfig)
-
-        // A retry should be scheduled
-        assertTrue(retryScheduler.scheduledActions.isNotEmpty())
     }
 }
