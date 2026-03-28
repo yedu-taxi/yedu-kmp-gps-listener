@@ -17,6 +17,7 @@ object ProtocolFormatter {
         if (position.battery.charging) {
             sb.append("&charge=true")
         }
+        sb.append("&accumulated_km=").append(position.km)
         if (position.mock) {
             sb.append("&mock=true")
         }
@@ -41,7 +42,7 @@ object ProtocolFormatter {
      *   "time": "1706345600000"
      * }
      */
-    fun formatJsonBody(position: Position): String {
+    fun formatJsonBody(position: Position, totalKm: Double = 0.0): String {
         val sb = StringBuilder()
         sb.append("{")
         sb.append("\"accuracy\":").append(position.accuracy)
@@ -54,6 +55,7 @@ object ProtocolFormatter {
         sb.append(",\"mock\":").append(position.mock)
         sb.append(",\"speed\":").append(position.speed)
         sb.append(",\"time\":\"").append(position.time).append("\"")
+        sb.append(",\"accumulated_km\":").append(totalKm)
         sb.append("}")
         return sb.toString()
     }

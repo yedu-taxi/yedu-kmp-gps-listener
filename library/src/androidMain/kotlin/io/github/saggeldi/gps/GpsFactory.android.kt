@@ -2,6 +2,7 @@ package io.github.saggeldi.gps
 
 import android.annotation.SuppressLint
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
 
 @SuppressLint("StaticFieldLeak")
 actual object GpsFactory {
@@ -49,5 +50,15 @@ actual object GpsFactory {
 
     actual fun createLocationPermissionHelper(): LocationPermissionHelper {
         return AndroidLocationPermissionHelper(requireContext())
+    }
+
+    actual fun createPositionDatabase(): PositionDatabase {
+        val context = requireContext()
+        return androidx.room.Room.databaseBuilder<PositionDatabase>(
+            context = context,
+            name = context.getDatabasePath("positions.db").absolutePath
+        ).setDriver(androidx.sqlite.driver.bundled.BundledSQLiteDriver())
+            .setQueryCoroutineContext(Dispatchers.IO)
+            .build()
     }
 }

@@ -13,5 +13,6 @@ data class Position(
     val battery: BatteryStatus = BatteryStatus(),
     val mock: Boolean = false,
     val tripId: String? = null,
-    val tripStatus: String? = null
+    val tripStatus: String? = null,
+    val km: Double = 0.0
 )

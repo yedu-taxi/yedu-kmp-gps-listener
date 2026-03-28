@@ -1,5 +1,11 @@
 package io.github.saggeldi.gps
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
 /**
  * Tracking pipeline that combines GPS listening, network monitoring, and HTTP sending.
  *
@@ -19,11 +25,13 @@ class TrackingController(
     private val serverUrl: String,
     private val listener: TrackingControllerListener? = null,
     private val useJsonApi: Boolean = false,
-    private val apiEndpoint: String? = null
+    private val apiEndpoint: String? = null,
+    private val positionDao: PositionDao? = null
 ) {
     private val gpsTracker: GpsTracker
     private var isOnline = false
     private var stopped = true
+    private val dbScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val tripTracker = TripTracker()
 
@@ -69,7 +77,13 @@ class TrackingController(
     }
 
     fun endTrip() {
+        val tripId = tripTracker.tripId
         tripTracker.endTrip()
+        if (tripId != null && positionDao != null) {
+            dbScope.launch {
+                positionDao.deleteByTrip(tripId)
+            }
+        }
     }
 
     fun getTripStats(): TripStats = tripTracker.getTripStats()
@@ -89,6 +103,7 @@ class TrackingController(
         stopped = true
         gpsTracker.stop()
         networkMonitor.stop()
+        dbScope.cancel()
     }
 
     fun updateConfig(newConfig: GpsConfig) {
@@ -113,16 +128,42 @@ class TrackingController(
         // Update trip tracker with new position
         tripTracker.updatePosition(positionWithTrip)
 
-        listener?.onPositionUpdate(positionWithTrip)
+        if (positionDao != null) {
+            dbScope.launch {
+                positionDao.insert(positionWithTrip.toEntity())
 
-        if (isOnline) {
-            send(positionWithTrip)
+                val totalKm = calculateTotalKmFromDb(positionWithTrip)
+
+                listener?.onPositionUpdate(positionWithTrip)
+                if (isOnline) send(positionWithTrip, totalKm)
+            }
+        } else {
+            listener?.onPositionUpdate(positionWithTrip)
+            if (isOnline) send(positionWithTrip)
         }
     }
 
-    private fun send(position: Position) {
+    private suspend fun calculateTotalKmFromDb(position: Position): Double {
+        val tripId = position.tripId ?: return 0.0
+        val all = positionDao!!.getByTrip(tripId)
+        println("DB positions for trip: total=${all.size}, statuses=${all.map { it.tripStatus }.distinct()}")
+        val positions = all.filter { it.tripStatus == "on_the_trip" }
+        println("on_the_way positions: ${positions.size}")
+        if (positions.size < 2) return 0.0
+        var totalMeters = 0.0
+        for (i in 1 until positions.size) {
+            totalMeters += DistanceCalculator.distance(
+                positions[i - 1].latitude, positions[i - 1].longitude,
+                positions[i].latitude, positions[i].longitude
+            )
+        }
+        println("Total km: ${totalMeters / 1000.0}")
+        return totalMeters / 1000.0
+    }
+
+    private fun send(position: Position, totalKm: Double = 0.0) {
         if (useJsonApi && apiEndpoint != null) {
-            val jsonBody = ProtocolFormatter.formatJsonBody(position)
+            val jsonBody = ProtocolFormatter.formatJsonBody(position, totalKm)
             positionSender.sendJsonPost(apiEndpoint, jsonBody, token) { success ->
                 if (success) {
                     listener?.onPositionSent(position)
