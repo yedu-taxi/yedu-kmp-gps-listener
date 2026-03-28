@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     alias(libs.plugins.vanniktech.mavenPublish)
+    id("com.google.devtools.ksp")
+    alias(libs.plugins.androidx.room)
 }
 
 group = "io.github.saggeldi"
@@ -36,12 +38,30 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation("androidx.core:core-ktx:1.12.0")
+            implementation(libs.androidx.room.sqlite.wrapper)
+        }
+
+        commonMain.dependencies {
+            implementation(libs.androidx.room.runtime)
+            implementation(libs.androidx.sqlite.bundled)
         }
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
     }
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
+}
+
+dependencies {
+    add("kspAndroid", libs.androidx.room.compiler)
+    add("kspIosSimulatorArm64", libs.androidx.room.compiler)
+    add("kspIosX64", libs.androidx.room.compiler)
+    add("kspIosArm64", libs.androidx.room.compiler)
+    // Add any other platform target you use in your project, for example kspDesktop
 }
 
 mavenPublishing {
