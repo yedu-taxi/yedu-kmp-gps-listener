@@ -164,9 +164,12 @@ class TrackingController(
     private fun send(position: Position, totalKm: Double = 0.0) {
         if (useJsonApi && apiEndpoint != null) {
             val jsonBody = ProtocolFormatter.formatJsonBody(position, totalKm)
-            positionSender.sendJsonPost(apiEndpoint, jsonBody, token) { success ->
+            positionSender.sendJsonPost(apiEndpoint, jsonBody, token) { success, responseBody ->
                 if (success) {
                     listener?.onPositionSent(position)
+                    responseBody?.let { body ->
+                        parseFare(body)?.let { fare -> listener?.onFareReceived(fare) }
+                    }
                 } else {
                     listener?.onSendFailed(position)
                 }
@@ -180,6 +183,16 @@ class TrackingController(
                     listener?.onSendFailed(position)
                 }
             }
+        }
+    }
+
+    /** Extracts current_fare from: {"data":{"current_fare":"25.50"},"success":true} */
+    private fun parseFare(json: String): String? {
+        return try {
+            val match = Regex(""""current_fare"\s*:\s*"([^"]+)"""").find(json)
+            match?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
         }
     }
 }

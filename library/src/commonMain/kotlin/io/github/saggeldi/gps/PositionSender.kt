@@ -11,5 +11,5 @@ interface PositionSender {
      * @param token Bearer token for Authorization header (nullable)
      * @param onComplete callback with success/failure
      */
-    fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean) -> Unit)
+    fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean, String?) -> Unit)
 }

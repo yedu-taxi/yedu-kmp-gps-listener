@@ -27,10 +27,10 @@ class AndroidPositionSender : PositionSender {
         }.start()
     }
 
-    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean) -> Unit) {
+    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean, String?) -> Unit) {
         Thread {
-            val success = sendJsonSingle(url, jsonBody, token)
-            handler.post { onComplete(success) }
+            val (success, body) = sendJsonSingle(url, jsonBody, token)
+            handler.post { onComplete(success, body) }
         }.start()
     }
 
@@ -51,7 +51,7 @@ class AndroidPositionSender : PositionSender {
         }
     }
 
-    private fun sendJsonSingle(url: String, jsonBody: String, token: String?): Boolean {
+    private fun sendJsonSingle(url: String, jsonBody: String, token: String?): Pair<Boolean, String?> {
         return try {
             val urlObj = URL(url)
             val connection = urlObj.openConnection() as HttpURLConnection
@@ -70,12 +70,10 @@ class AndroidPositionSender : PositionSender {
             }
             val responseCode = connection.responseCode
             val inputStream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
-            inputStream?.use { stream ->
-                while (stream.read() != -1) { /* drain */ }
-            }
-            responseCode in 200..299
+            val body = inputStream?.use { stream -> stream.bufferedReader().readText() }
+            Pair(responseCode in 200..299, body)
         } catch (_: Exception) {
-            false
+            Pair(false, null)
         }
     }
 }

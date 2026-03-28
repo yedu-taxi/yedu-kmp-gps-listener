@@ -53,10 +53,10 @@ private class FakePositionSender : PositionSender {
         onComplete(requests.map { sendSuccess })
     }
 
-    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean) -> Unit) {
+    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean, String?) -> Unit) {
         sentJsonBodies.add(jsonBody)
         lastToken = token
-        onComplete(sendSuccess)
+        onComplete(sendSuccess, null)
     }
 }
 

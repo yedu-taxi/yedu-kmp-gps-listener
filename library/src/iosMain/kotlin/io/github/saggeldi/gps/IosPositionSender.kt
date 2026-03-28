@@ -37,10 +37,10 @@ class IosPositionSender : PositionSender {
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean) -> Unit) {
+    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean, String?) -> Unit) {
         val nsUrl = NSURL.URLWithString(url)
         if (nsUrl == null) {
-            onComplete(false)
+            onComplete(false, null)
             return
         }
         val urlRequest = NSMutableURLRequest(
@@ -54,14 +54,14 @@ class IosPositionSender : PositionSender {
         if (token != null) {
             urlRequest.setValue("Bearer $token", forHTTPHeaderField = "Authorization")
         }
-        val bodyData = jsonBody.encodeToByteArray()
         urlRequest.setHTTPBody(NSString.create(string = jsonBody).dataUsingEncoding(NSUTF8StringEncoding))
 
         NSURLSession.sharedSession.dataTaskWithRequest(urlRequest) { data, response, error ->
             val httpResponse = response as? NSHTTPURLResponse
             val success = error == null && httpResponse != null && httpResponse.statusCode in 200..299
+            val body = data?.let { NSString.create(data = it, encoding = NSUTF8StringEncoding) as? String }
             dispatch_async(dispatch_get_main_queue()) {
-                onComplete(success)
+                onComplete(success, body)
             }
         }.resume()
     }

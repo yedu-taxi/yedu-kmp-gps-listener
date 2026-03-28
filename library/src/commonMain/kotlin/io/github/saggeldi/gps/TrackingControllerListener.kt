@@ -6,4 +6,5 @@ interface TrackingControllerListener {
     fun onSendFailed(position: Position) {}
     fun onError(error: String) {}
     fun onStatusChange(status: TrackerStatus) {}
+    fun onFareReceived(fare: String) {}
 }
