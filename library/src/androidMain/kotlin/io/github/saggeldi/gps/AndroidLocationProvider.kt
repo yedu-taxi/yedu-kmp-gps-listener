@@ -3,19 +3,41 @@ package io.github.saggeldi.gps
 import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
-import android.os.Bundle
 import android.os.SystemClock
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 
+/**
+ * Fixes from Google Play services' fused location provider.
+ *
+ * This used to read `LocationManager.GPS_PROVIDER` directly. Raw GPS has no
+ * sensor fusion and no Wi-Fi/cell assistance, so it produces noisier points and
+ * long dropouts in exactly the places taxis spend their time — between tall
+ * buildings, in tunnels, in underground pickup areas. The fused provider fills
+ * those gaps, which is what the passenger's map ends up showing.
+ */
 class AndroidLocationProvider(
     private val context: Context
 ) : PlatformLocationProvider {
 
-    private val locationManager =
-        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val fusedClient: FusedLocationProviderClient =
+        LocationServices.getFusedLocationProviderClient(context)
     private val batteryProvider = AndroidBatteryProvider(context)
-    private var locationListener: LocationListener? = null
+    private var locationCallback: LocationCallback? = null
+
+    /**
+     * Last heading Android actually knew, in degrees.
+     *
+     * `hasBearing()` is false whenever the heading is unknown, which is the normal
+     * state while the car is stopped. Reporting 0 there would spin the car icon on
+     * the passenger's map to due north every time the driver stops, so the last
+     * known good heading is held instead.
+     */
+    private var lastKnownCourse: Double = 0.0
 
     companion object {
         private const val MINIMUM_INTERVAL_MS = 1000L
@@ -29,37 +51,47 @@ class AndroidLocationProvider(
         onLocation: (Position) -> Unit,
         onError: (String) -> Unit
     ) {
-        val provider = when (config.accuracy) {
-            LocationAccuracy.HIGH -> LocationManager.GPS_PROVIDER
-            LocationAccuracy.LOW -> LocationManager.PASSIVE_PROVIDER
-            LocationAccuracy.MEDIUM -> LocationManager.NETWORK_PROVIDER
+        stopUpdates()
+
+        val priority = when (config.accuracy) {
+            LocationAccuracy.HIGH -> Priority.PRIORITY_HIGH_ACCURACY
+            LocationAccuracy.MEDIUM -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+            LocationAccuracy.LOW -> Priority.PRIORITY_LOW_POWER
         }
 
-        val minTimeMs = if (config.distance > 0 || config.angle > 0) {
+        // With a distance or angle trigger configured, fixes have to arrive
+        // faster than `interval` for [GpsTracker] to have anything to test those
+        // triggers against — it can only filter fixes it is given.
+        val intervalMs = if (config.distance > 0 || config.angle > 0) {
             MINIMUM_INTERVAL_MS
         } else {
             config.interval * 1000
         }
 
-        locationListener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
+        val request = LocationRequest.Builder(priority, intervalMs)
+            // Accept an early fix rather than holding it back to the interval
+            // boundary; GpsTracker applies the real rate limit and now allows a
+            // small tolerance, so this is what keeps the cadence steady.
+            .setMinUpdateIntervalMillis(intervalMs / 2)
+            .setWaitForAccurateLocation(false)
+            .build()
+
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                val location = result.lastLocation ?: return
                 if (isLocationStale(location)) return
                 val battery = batteryProvider.getBatteryStatus()
-                val position = location.toPosition(config.deviceId, battery)
-                onLocation(position)
-            }
-            @Suppress("DEPRECATION")
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {
-                onError("Location provider disabled: $provider")
+                onLocation(location.toPosition(config.deviceId, battery))
             }
         }
+        locationCallback = callback
 
         try {
-            locationManager.requestLocationUpdates(
-                provider, minTimeMs, 0f, locationListener!!
-            )
+            fusedClient.requestLocationUpdates(
+                request, callback, android.os.Looper.getMainLooper()
+            ).addOnFailureListener { e ->
+                onError("Location provider error: ${e.message}")
+            }
         } catch (e: SecurityException) {
             onError("Location permission not granted: ${e.message}")
         } catch (e: Exception) {
@@ -68,10 +100,8 @@ class AndroidLocationProvider(
     }
 
     override fun stopUpdates() {
-        locationListener?.let {
-            locationManager.removeUpdates(it)
-        }
-        locationListener = null
+        locationCallback?.let { fusedClient.removeLocationUpdates(it) }
+        locationCallback = null
     }
 
     @SuppressLint("MissingPermission")
@@ -80,12 +110,11 @@ class AndroidLocationProvider(
         onLocation: (Position) -> Unit
     ) {
         try {
-            val lastLocation =
-                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (lastLocation != null && !isLocationStale(lastLocation)) {
-                val battery = batteryProvider.getBatteryStatus()
-                onLocation(lastLocation.toPosition(config.deviceId, battery))
+            fusedClient.lastLocation.addOnSuccessListener { location ->
+                if (location != null && !isLocationStale(location)) {
+                    val battery = batteryProvider.getBatteryStatus()
+                    onLocation(location.toPosition(config.deviceId, battery))
+                }
             }
         } catch (_: SecurityException) {
         }
@@ -102,14 +131,17 @@ class AndroidLocationProvider(
     }
 
     private fun Location.toPosition(deviceId: String, battery: BatteryStatus): Position {
+        if (hasBearing()) lastKnownCourse = bearing.toDouble()
+
         return Position(
             deviceId = deviceId,
             time = time,
             latitude = latitude,
             longitude = longitude,
             altitude = altitude,
-            speed = if (hasSpeed()) speed * 1.943844 else 0.0,
-            course = if (hasBearing()) bearing.toDouble() else 0.0,
+            // Reported in m/s and stored as-is; each wire format converts.
+            speed = if (hasSpeed()) speed.toDouble() else 0.0,
+            course = lastKnownCourse,
             accuracy = if (hasAccuracy()) accuracy.toDouble() else 0.0,
             battery = battery,
             mock = isMockLocation()

@@ -49,13 +49,18 @@ fun GpsFactory.createTrackingController(
  * to the Yedu backend API (trips/driver-location endpoint).
  *
  * @param baseUrl The base URL of the API (e.g. "https://api.example.com/api/v1")
- * @param token Initial Bearer token (can be changed at runtime via controller.token)
+ * @param tokenProvider Reads the current Bearer token. Called on every send, so
+ *   the tracker always presents whatever token the app last refreshed — pass the
+ *   accessor, never a token string captured at construction time.
+ * @param tokenRefresher Refreshes the token after a 401 and reports whether a
+ *   fresh one is available. Without it a 401 is unrecoverable on this path.
  * @param listener Optional listener for position events
  * @param enableLocalStorage Whether to persist each position to the local Room database
  */
 fun GpsFactory.createApiTrackingController(
     baseUrl: String,
-    token: String? = null,
+    tokenProvider: (() -> String?)? = null,
+    tokenRefresher: (suspend () -> Boolean)? = null,
     listener: TrackingControllerListener? = null,
     enableLocalStorage: Boolean = false
 ): TrackingController {
@@ -71,6 +76,7 @@ fun GpsFactory.createApiTrackingController(
         apiEndpoint = apiEndpoint,
         positionDao = dao
     )
-    controller.token = token
+    controller.tokenProvider = tokenProvider
+    controller.tokenRefresher = tokenRefresher
     return controller
 }

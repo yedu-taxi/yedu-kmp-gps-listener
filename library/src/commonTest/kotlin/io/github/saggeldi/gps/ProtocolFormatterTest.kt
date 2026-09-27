@@ -1,5 +1,6 @@
 package io.github.saggeldi.gps
 
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertContains
@@ -43,7 +44,8 @@ class ProtocolFormatterTest {
         assertContains(url, "timestamp=1706345600")
         assertContains(url, "lat=40.7128")
         assertContains(url, "lon=-74.006")
-        assertContains(url, "speed=5.0")
+        // Position.speed is m/s; the Traccar protocol wants knots.
+        assertContains(url, "speed=${5.0 * 1.943844}")
         assertContains(url, "bearing=180.0")
         assertContains(url, "altitude=10.0")
         assertContains(url, "accuracy=5.0")
@@ -151,6 +153,31 @@ class ProtocolFormatterTest {
         assertContains(url, "speed=0.0")
     }
 
+    /**
+     * The two wire formats disagree on the unit for `speed`, and getting it
+     * wrong is silent — the number still looks plausible. 100 km/h is 27.7778
+     * m/s, which must serialise as 100 km/h to Yedu and 54 knots to Traccar.
+     */
+    @Test
+    fun speedIsConvertedPerProtocol() {
+        val hundredKmhInMps = 100.0 / 3.6
+        val pos = makePosition(speed = hundredKmhInMps)
+
+        val json = ProtocolFormatter.formatJsonBody(pos)
+        val jsonSpeed = json.substringAfter("\"speed\":").substringBefore(",").toDouble()
+        assertTrue(
+            abs(jsonSpeed - 100.0) < 0.001,
+            "JSON body must carry km/h, got $jsonSpeed"
+        )
+
+        val url = ProtocolFormatter.formatRequest("https://example.com", pos)
+        val urlSpeed = url.substringAfter("&speed=").substringBefore("&").toDouble()
+        assertTrue(
+            abs(urlSpeed - 53.9957) < 0.01,
+            "Traccar URL must carry knots, got $urlSpeed"
+        )
+    }
+
     @Test
     fun formatRequestHandlesNegativeCoordinates() {
         val pos = makePosition(latitude = -33.8688, longitude = 151.2093)
@@ -174,7 +201,8 @@ class ProtocolFormatterTest {
         assertContains(json, "\"latitude\":40.7128")
         assertContains(json, "\"longitude\":-74.006")
         assertContains(json, "\"mock\":false")
-        assertContains(json, "\"speed\":5.0")
+        // Position.speed is m/s; the Yedu API wants km/h.
+        assertContains(json, "\"speed\":${5.0 * 3.6}")
         assertContains(json, "\"time\":\"1706345600000\"")
     }
 

@@ -96,16 +96,33 @@ class IosLocationProvider : PlatformLocationProvider {
     }
 }
 
+/**
+ * Last heading iOS actually knew, in degrees.
+ *
+ * `CLLocation.course` is -1 whenever the heading is unknown, which is the normal
+ * state while the car is stopped. -1 is rejected by the backend, and 0 would spin
+ * the car icon on the passenger's map to due north every time the driver stops,
+ * so the last known good heading is held instead.
+ */
+private var lastKnownCourse: Double = 0.0
+
 internal fun CLLocation.toPosition(deviceId: String, battery: BatteryStatus): Position {
+    if (course >= 0) lastKnownCourse = course
+
     return Position(
         deviceId = deviceId,
         time = (timestamp.timeIntervalSince1970 * 1000).toLong(),
         latitude = coordinate.useContents { latitude },
         longitude = coordinate.useContents { longitude },
         altitude = altitude,
-        speed = if (speed >= 0) speed * 1.943844 else 0.0,
-        course = if (course >= 0) course else 0.0,
-        accuracy = horizontalAccuracy,
+        // CLLocation.speed is m/s and is negative when invalid. Stored as-is;
+        // each wire format converts.
+        speed = if (speed >= 0) speed else 0.0,
+        course = lastKnownCourse,
+        // horizontalAccuracy is negative when the fix is invalid, and the backend
+        // rejects the whole update on a negative value — which drops the driver out
+        // of dispatch until the next valid one.
+        accuracy = if (horizontalAccuracy >= 0) horizontalAccuracy else 0.0,
         battery = battery,
         mock = false
     )

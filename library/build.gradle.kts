@@ -39,6 +39,9 @@ kotlin {
         androidMain.dependencies {
             implementation("androidx.core:core-ktx:1.12.0")
             implementation(libs.androidx.room.sqlite.wrapper)
+            // Fused location: sensor-fused, assisted fixes. Raw GPS_PROVIDER
+            // drops out badly in urban canyons and tunnels.
+            implementation(libs.play.services.location)
         }
 
         commonMain.dependencies {
@@ -48,6 +51,8 @@ kotlin {
 
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            // Needed to drive the suspending PositionDao path in PaidDistanceTest.
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
         }
     }
 }

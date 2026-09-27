@@ -9,7 +9,8 @@ object ProtocolFormatter {
         sb.append("&timestamp=").append(position.time / 1000)
         sb.append("&lat=").append(position.latitude)
         sb.append("&lon=").append(position.longitude)
-        sb.append("&speed=").append(position.speed)
+        // The Traccar/OsmAnd protocol defines `speed` in knots.
+        sb.append("&speed=").append(position.speed * MPS_TO_KNOTS)
         sb.append("&bearing=").append(position.course)
         sb.append("&altitude=").append(position.altitude)
         sb.append("&accuracy=").append(position.accuracy)
@@ -42,7 +43,12 @@ object ProtocolFormatter {
      *   "time": "1706345600000"
      * }
      */
-    fun formatJsonBody(position: Position, totalKm: Double = 0.0): String {
+    fun formatJsonBody(
+        position: Position,
+        totalKm: Double = 0.0,
+        nav: NavSnapshot? = null,
+        tripStatus: String? = null
+    ): String {
         val sb = StringBuilder()
         sb.append("{")
         sb.append("\"accuracy\":").append(position.accuracy)
@@ -53,12 +59,37 @@ object ProtocolFormatter {
         sb.append(",\"latitude\":").append(position.latitude)
         sb.append(",\"longitude\":").append(position.longitude)
         sb.append(",\"mock\":").append(position.mock)
-        sb.append(",\"speed\":").append(position.speed)
+        // The backend treats `speed` as km/h and forwards it verbatim to the
+        // passenger's `driver_loc` event and the admin live map.
+        sb.append(",\"speed\":").append(position.speed * MPS_TO_KMH)
         sb.append(",\"time\":\"").append(position.time).append("\"")
         sb.append(",\"accumulated_km\":").append(totalKm)
+
+        // Live Google Navigation SDK guidance, sent so the backend can compute the
+        // fare/ETA and forward them to the passenger via the `driver_loc` WS event.
+        // During `accepted` (driving to pickup) the server reads the pickup figures;
+        // during `in_progress` it reads the arrival figures. Omit zero/absent values.
+        if (nav != null) {
+            when (tripStatus) {
+                STATUS_ON_THE_WAY, STATUS_ACCEPTED -> {
+                    if (nav.hasDistance) sb.append(",\"distance_to_pickup_in_km\":").append(nav.remainingKm)
+                    if (nav.hasTime) sb.append(",\"time_to_pickup_in_min\":").append(nav.remainingMinutes)
+                }
+                STATUS_ON_THE_TRIP, STATUS_IN_PROGRESS -> {
+                    if (nav.hasDistance) sb.append(",\"distance_to_arrival_in_km\":").append(nav.remainingKm)
+                    if (nav.hasTime) sb.append(",\"time_to_arrival_in_min\":").append(nav.remainingMinutes)
+                }
+            }
+        }
         sb.append("}")
         return sb.toString()
     }
+
+    // Trip-phase identifiers the driver app uses (TrackingController.tripTracker.status).
+    private const val STATUS_ON_THE_WAY = "on_the_way"
+    private const val STATUS_ACCEPTED = "accepted"
+    private const val STATUS_ON_THE_TRIP = "on_the_trip"
+    private const val STATUS_IN_PROGRESS = "in_progress"
 
     private fun escapeJson(value: String): String {
         val sb = StringBuilder()

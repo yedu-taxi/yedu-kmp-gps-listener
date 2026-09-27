@@ -1,5 +1,10 @@
 package io.github.saggeldi.gps
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -39,9 +44,13 @@ private class FakeLocationProvider : PlatformLocationProvider {
 
 private class FakePositionSender : PositionSender {
     var sendSuccess = true
+
+    /** HTTP status the JSON path answers with; null models a transport failure. */
+    var jsonStatus: Int? = 200
     var sentRequests = mutableListOf<String>()
     var sentJsonBodies = mutableListOf<String>()
     var lastToken: String? = null
+    val sentTokens = mutableListOf<String?>()
 
     override fun sendPosition(request: String, onComplete: (Boolean) -> Unit) {
         sentRequests.add(request)
@@ -53,10 +62,11 @@ private class FakePositionSender : PositionSender {
         onComplete(requests.map { sendSuccess })
     }
 
-    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (Boolean, String?) -> Unit) {
+    override fun sendJsonPost(url: String, jsonBody: String, token: String?, onComplete: (status: Int?, body: String?) -> Unit) {
         sentJsonBodies.add(jsonBody)
         lastToken = token
-        onComplete(sendSuccess, null)
+        sentTokens.add(token)
+        onComplete(if (sendSuccess) jsonStatus else null, null)
     }
 }
 
@@ -84,12 +94,14 @@ private class CollectingControllerListener : TrackingControllerListener {
     val failedPositions = mutableListOf<Position>()
     val errors = mutableListOf<String>()
     val statusChanges = mutableListOf<TrackerStatus>()
+    var authFailures = 0
 
     override fun onPositionUpdate(position: Position) { updatedPositions.add(position) }
     override fun onPositionSent(position: Position) { sentPositions.add(position) }
     override fun onSendFailed(position: Position) { failedPositions.add(position) }
     override fun onError(error: String) { errors.add(error) }
     override fun onStatusChange(status: TrackerStatus) { statusChanges.add(status) }
+    override fun onAuthFailure() { authFailures++ }
 }
 
 private fun epochMs(seconds: Long): Long = seconds * 1000
@@ -277,7 +289,7 @@ class TrackingControllerTest {
             listener = listener,
             useJsonApi = true, apiEndpoint = "https://api.example.com/v1/location"
         )
-        controller.token = "my-token"
+        controller.tokenProvider = { "my-token" }
 
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
@@ -434,7 +446,7 @@ class TrackingControllerTest {
             apiEndpoint = "https://api.example.com/v1/location"
         )
 
-        controller.token = "bearer-123"
+        controller.tokenProvider = { "bearer-123" }
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
@@ -442,7 +454,7 @@ class TrackingControllerTest {
     }
 
     @Test
-    fun tokenCanBeChangedAtRuntime() {
+    fun tokenIsReReadOnEverySend() {
         val provider = FakeLocationProvider()
         val sender = FakePositionSender()
         val controller = createController(
@@ -451,12 +463,15 @@ class TrackingControllerTest {
             apiEndpoint = "https://api.example.com/v1/location"
         )
 
-        controller.token = "token-1"
+        // What the Ktor client's refresh does to the stored token mid-shift: the
+        // tracker must follow it rather than keep posting the one it started with.
+        var stored = "token-1"
+        controller.tokenProvider = { stored }
         controller.start(defaultConfig)
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
         assertEquals("token-1", sender.lastToken)
 
-        controller.token = "token-2"
+        stored = "token-2"
         provider.emit(Position(deviceId = "test-device", time = epochMs(500)))
         assertEquals("token-2", sender.lastToken)
     }
@@ -475,5 +490,101 @@ class TrackingControllerTest {
         provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
 
         assertNull(sender.lastToken)
+    }
+
+    // ── Expired-token recovery ──────────────────────────────────────────
+    //
+    // These POSTs never touch the Ktor client, so the 401-refresh-retry
+    // interceptor does not cover them. The controller has to do it itself, or a
+    // driver whose token expires mid-shift keeps posting a dead one and drops
+    // out of the geo-index without any sign of it on screen.
+
+    @Test
+    fun unauthorizedRefreshesTokenAndResendsThePosition() = runTest {
+        val provider = FakeLocationProvider()
+        val sender = FakePositionSender()
+        val listener = CollectingControllerListener()
+        val controller = createController(
+            provider = provider, sender = sender, listener = listener,
+            useJsonApi = true, apiEndpoint = "https://api.example.com/v1/location"
+        )
+
+        var stored = "expired"
+        sender.jsonStatus = 401
+        controller.tokenProvider = { stored }
+        controller.tokenRefresher = {
+            stored = "fresh"
+            sender.jsonStatus = 200
+            true
+        }
+
+        controller.start(defaultConfig)
+        provider.emit(Position(deviceId = "test-device", time = epochMs(100)))
+
+        awaitOnDefault { listener.sentPositions.isNotEmpty() }
+        assertEquals(listOf<String?>("expired", "fresh"), sender.sentTokens.toList())
+        assertEquals(1, listener.sentPositions.size)
+        assertEquals(0, listener.authFailures)
+    }
+
+    @Test
+    fun unauthorizedThatSurvivesRefreshIsReportedToTheApp() = runTest {
+        val provider = FakeLocationProvider()
+        val sender = FakePositionSender()
+        val listener = CollectingControllerListener()
+        val controller = createController(
+            provider = provider, sender = sender, listener = listener,
+            useJsonApi = true, apiEndpoint = "https://api.example.com/v1/location"
+        )
+
+        sender.jsonStatus = 401
+        controller.tokenProvider = { "expired" }
+        controller.tokenRefresher = { false }
+
+        controller.start(defaultConfig)
+        repeat(3) { i ->
+            provider.emit(Position(deviceId = "test-device", time = epochMs(100L * (i + 1))))
+            awaitOnDefault { listener.failedPositions.size > i }
+        }
+
+        // Reported once, not once per rejected ping.
+        assertEquals(1, listener.authFailures)
+    }
+
+    @Test
+    fun transportFailureIsNotTreatedAsAnAuthProblem() = runTest {
+        val provider = FakeLocationProvider()
+        val sender = FakePositionSender()
+        val listener = CollectingControllerListener()
+        val controller = createController(
+            provider = provider, sender = sender, listener = listener,
+            useJsonApi = true, apiEndpoint = "https://api.example.com/v1/location"
+        )
+
+        var refreshCalls = 0
+        sender.sendSuccess = false          // no status at all: the tunnel case
+        controller.tokenProvider = { "valid" }
+        controller.tokenRefresher = { refreshCalls++; true }
+
+        controller.start(defaultConfig)
+        repeat(3) { i ->
+            provider.emit(Position(deviceId = "test-device", time = epochMs(100L * (i + 1))))
+        }
+
+        assertEquals(3, listener.failedPositions.size)
+        assertEquals(0, refreshCalls)
+        assertEquals(0, listener.authFailures)
+    }
+
+    /**
+     * The refresh runs on the controller's own scope, off the test dispatcher,
+     * so the assertions have to wait for real work rather than virtual time.
+     */
+    private suspend fun awaitOnDefault(timeoutMs: Long = 5_000, condition: () -> Boolean) {
+        withContext(Dispatchers.Default) {
+            withTimeout<Unit>(timeoutMs) {
+                while (!condition()) delay(5)
+            }
+        }
     }
 }

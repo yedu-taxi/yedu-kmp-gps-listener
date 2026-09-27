@@ -52,6 +52,43 @@ class GpsTrackerFilterTest {
         assertEquals(2, listener.positions.size)
     }
 
+    /**
+     * The platform providers are configured with the same period as
+     * [GpsConfig.interval], so fixes land right on the boundary and routinely
+     * arrive a few milliseconds early. Those must still be accepted — rejecting
+     * them pushed the next accepted fix a full interval out, halving the update
+     * rate the passenger's map actually receives.
+     */
+    @Test
+    fun testPositionArrivingFractionallyEarlyIsAccepted() {
+        val provider = FakeLocationProvider()
+        val listener = CollectingListener()
+        val tracker = GpsTracker(provider, listener)
+
+        tracker.start(GpsConfig(deviceId = "test", interval = 5))
+
+        provider.emit(Position(deviceId = "test", time = 1_000_000))
+        provider.emit(Position(deviceId = "test", time = 1_004_999))
+        provider.emit(Position(deviceId = "test", time = 1_009_998))
+
+        assertEquals(3, listener.positions.size)
+    }
+
+    /** A fix genuinely inside the interval is still filtered out. */
+    @Test
+    fun testPositionWellInsideIntervalIsRejected() {
+        val provider = FakeLocationProvider()
+        val listener = CollectingListener()
+        val tracker = GpsTracker(provider, listener)
+
+        tracker.start(GpsConfig(deviceId = "test", interval = 5))
+
+        provider.emit(Position(deviceId = "test", time = 1_000_000))
+        provider.emit(Position(deviceId = "test", time = 1_003_000))
+
+        assertEquals(1, listener.positions.size)
+    }
+
     @Test
     fun testPositionAcceptedByDistance() {
         val provider = FakeLocationProvider()
