@@ -1,4 +1,3 @@
-import com.android.build.api.dsl.androidLibrary
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -17,17 +16,16 @@ kotlin {
         freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 
-    androidLibrary {
+    // AGP 9: the Android-KMP library block is `android {}` (`androidLibrary {}` is gone).
+    android {
         namespace = "io.github.saggeldi.gps"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
 
-        withHostTestBuilder {}.configure {}
+        withHostTest {}
 
-        compilations.configureEach {
-            compilerOptions.configure {
-                jvmTarget.set(JvmTarget.JVM_11)
-            }
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_11)
         }
     }
 
