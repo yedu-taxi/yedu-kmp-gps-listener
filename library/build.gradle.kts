@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     alias(libs.plugins.vanniktech.mavenPublish)
-    id("com.google.devtools.ksp")
+    alias(libs.plugins.ksp)
     alias(libs.plugins.androidx.room)
 }
 
@@ -25,17 +25,16 @@ kotlin {
         withHostTest {}
 
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_11)
+            jvmTarget.set(JvmTarget.JVM_17)
         }
     }
 
-    iosX64()
     iosArm64()
     iosSimulatorArm64()
 
     sourceSets {
         androidMain.dependencies {
-            implementation("androidx.core:core-ktx:1.12.0")
+            implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.room.sqlite.wrapper)
             // Fused location: sensor-fused, assisted fixes. Raw GPS_PROVIDER
             // drops out badly in urban canyons and tunnels.
@@ -50,7 +49,7 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             // Needed to drive the suspending PositionDao path in PaidDistanceTest.
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }
@@ -62,7 +61,6 @@ room {
 dependencies {
     add("kspAndroid", libs.androidx.room.compiler)
     add("kspIosSimulatorArm64", libs.androidx.room.compiler)
-    add("kspIosX64", libs.androidx.room.compiler)
     add("kspIosArm64", libs.androidx.room.compiler)
     // Add any other platform target you use in your project, for example kspDesktop
 }
