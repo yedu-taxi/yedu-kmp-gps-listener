@@ -36,6 +36,10 @@ class PaidDistanceTest {
         }
 
         override suspend fun deleteAll() = rows.clear()
+
+        override suspend fun deleteUntaggedBefore(before: Long) {
+            rows.removeAll { it.tripId == null && it.time < before }
+        }
     }
 
     private class RecordingSender : PositionSender {

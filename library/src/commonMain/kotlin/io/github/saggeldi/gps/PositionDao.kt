@@ -23,4 +23,8 @@ interface PositionDao {
 
     @Query("DELETE FROM positions")
     suspend fun deleteAll()
+
+    /** Fixes taken outside a trip (online idle) before [before] (epoch ms). */
+    @Query("DELETE FROM positions WHERE tripId IS NULL AND time < :before")
+    suspend fun deleteUntaggedBefore(before: Long)
 }

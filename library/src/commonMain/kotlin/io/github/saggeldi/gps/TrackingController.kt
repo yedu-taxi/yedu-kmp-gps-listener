@@ -161,6 +161,13 @@ class TrackingController(
 
     fun start(config: GpsConfig) {
         stopped = false
+        // PRB-D-A1-017: fixes outside a trip are only needed for the live ping; drop old ones
+        // so the table doesn't grow for months. Trip rows are purged by endTrip().
+        positionDao?.let { dao ->
+            dbScope.launch {
+                runCatching { dao.deleteUntaggedBefore(currentTimeMillis() - UNTAGGED_RETENTION_MS) }
+            }
+        }
 
         // Start the monitor first, then read it: a monitor that only determines its
         // state in start() would otherwise report offline here and never correct it,
@@ -359,9 +366,9 @@ class TrackingController(
      * Refreshes the access token and resends [position] with it.
      *
      * Single-flight: at the 5 s fix rate an expired token 401s a dozen pings a
-     * minute, and one refresh serves them all. A ping that arrives while a
-     * refresh is running is dropped rather than queued — the next fix is
-     * seconds away, and replaying stale ones buys nothing.
+     * minute, and one refresh serves them all. A ping that 401s while a refresh
+     * is running waits for it and is resent once with the new token; only a 401
+     * after a resend counts towards [MAX_CONSECUTIVE_AUTH_FAILURES].
      */
     private fun refreshTokenAndResend(position: Position, totalKm: Double) {
         val refresher = tokenRefresher
@@ -371,7 +378,12 @@ class TrackingController(
         }
         authScope.launch {
             if (!refreshMutex.tryLock()) {
-                recordAuthFailure(position)
+                // Another 401 is already refreshing (PRB-D-A1-010): wait for it and resend with
+                // the new token. Counting this one as a failure took drivers offline while the
+                // refresh was about to succeed.
+                refreshMutex.lock()
+                refreshMutex.unlock()
+                send(position, totalKm, isAuthRetry = true)
                 return@launch
             }
             val refreshed = try {
@@ -418,6 +430,9 @@ class TrackingController(
          * enough that nobody drives around unbookable.
          */
         const val MAX_CONSECUTIVE_AUTH_FAILURES = 3
+
+        /** Untagged (no trip) fixes are kept this long. */
+        const val UNTAGGED_RETENTION_MS = 24L * 60 * 60 * 1000
 
         /**
          * Positions held while offline. At the 5 s fix interval this is ~25
