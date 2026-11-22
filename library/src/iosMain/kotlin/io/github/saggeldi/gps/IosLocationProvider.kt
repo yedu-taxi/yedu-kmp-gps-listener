@@ -5,6 +5,7 @@ package io.github.saggeldi.gps
 import kotlinx.cinterop.useContents
 import platform.CoreLocation.*
 import platform.Foundation.timeIntervalSince1970
+import platform.Foundation.timeIntervalSinceNow
 import platform.darwin.NSObject
 
 class IosLocationProvider : PlatformLocationProvider {
@@ -28,19 +29,21 @@ class IosLocationProvider : PlatformLocationProvider {
 
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = true
+        manager.showsBackgroundLocationIndicator = true
+        manager.activityType = platform.CoreLocation.CLActivityTypeAutomotiveNavigation
 
         delegate = LocationDelegate(config.deviceId, onLocation, onError)
         manager.delegate = delegate
 
-        manager.requestAlwaysAuthorization()
+        // When-In-Use is enough for a driver who goes online in the foreground (research §3.2);
+        // asking for Always on every start re-prompted drivers who had said no.
+        manager.requestWhenInUseAuthorization()
 
         manager.startUpdatingLocation()
-        manager.startMonitoringSignificantLocationChanges()
     }
 
     override fun stopUpdates() {
         locationManager?.stopUpdatingLocation()
-        locationManager?.stopMonitoringSignificantLocationChanges()
         locationManager?.delegate = null
         locationManager = null
         delegate = null
@@ -50,7 +53,7 @@ class IosLocationProvider : PlatformLocationProvider {
         config: GpsConfig,
         onLocation: (Position) -> Unit
     ) {
-        locationManager?.location?.let { location ->
+        locationManager?.location?.takeIf { it.isUsableFix() }?.let { location ->
             val battery = IosBatteryProvider().getBatteryStatus()
             onLocation(location.toPosition(config.deviceId, battery))
         }
@@ -70,6 +73,7 @@ class IosLocationProvider : PlatformLocationProvider {
         ) {
             for (loc in didUpdateLocations) {
                 val location = loc as? CLLocation ?: continue
+                if (!location.isUsableFix()) continue
                 val battery = batteryProvider.getBatteryStatus()
                 val position = location.toPosition(deviceId, battery)
                 onLocation(position)
@@ -106,6 +110,15 @@ class IosLocationProvider : PlatformLocationProvider {
  */
 private var lastKnownCourse: Double = 0.0
 
+/**
+ * A fix worth sending: valid accuracy (negative = invalid; it used to go out as accuracy 0, which
+ * the server reads as perfect) and not older than 10 s (Android applies the same age limit).
+ */
+internal fun CLLocation.isUsableFix(): Boolean =
+    horizontalAccuracy >= 0 && kotlin.math.abs(timestamp.timeIntervalSinceNow) <= MAX_FIX_AGE_S
+
+private const val MAX_FIX_AGE_S = 10.0
+
 internal fun CLLocation.toPosition(deviceId: String, battery: BatteryStatus): Position {
     if (course >= 0) lastKnownCourse = course
 
@@ -119,10 +132,8 @@ internal fun CLLocation.toPosition(deviceId: String, battery: BatteryStatus): Po
         // each wire format converts.
         speed = if (speed >= 0) speed else 0.0,
         course = lastKnownCourse,
-        // horizontalAccuracy is negative when the fix is invalid, and the backend
-        // rejects the whole update on a negative value — which drops the driver out
-        // of dispatch until the next valid one.
-        accuracy = if (horizontalAccuracy >= 0) horizontalAccuracy else 0.0,
+        // Invalid fixes (negative accuracy) are filtered out by isUsableFix().
+        accuracy = horizontalAccuracy,
         battery = battery,
         mock = false
     )

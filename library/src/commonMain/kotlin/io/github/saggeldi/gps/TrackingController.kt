@@ -156,16 +156,7 @@ class TrackingController(
      */
     suspend fun getTripDistanceKm(tripId: String): Double {
         val dao = positionDao ?: return 0.0
-        val positions = dao.getByTripAndStatus(tripId, PAID_STATUS)
-        if (positions.size < 2) return 0.0
-        var totalMeters = 0.0
-        for (i in 1 until positions.size) {
-            totalMeters += DistanceCalculator.distance(
-                positions[i - 1].latitude, positions[i - 1].longitude,
-                positions[i].latitude, positions[i].longitude
-            )
-        }
-        return totalMeters / 1000.0
+        return paidDistanceKm(dao, tripId)
     }
 
     fun start(config: GpsConfig) {
@@ -444,4 +435,18 @@ class TrackingController(
             null
         }
     }
+}
+
+/** Sum of consecutive haversines over [tripId]'s paid (`on_the_trip`) fixes, in km. */
+internal suspend fun paidDistanceKm(dao: PositionDao, tripId: String): Double {
+    val positions = dao.getByTripAndStatus(tripId, "on_the_trip")
+    if (positions.size < 2) return 0.0
+    var totalMeters = 0.0
+    for (i in 1 until positions.size) {
+        totalMeters += DistanceCalculator.distance(
+            positions[i - 1].latitude, positions[i - 1].longitude,
+            positions[i].latitude, positions[i].longitude
+        )
+    }
+    return totalMeters / 1000.0
 }

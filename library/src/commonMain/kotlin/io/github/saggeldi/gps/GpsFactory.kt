@@ -80,3 +80,15 @@ fun GpsFactory.createApiTrackingController(
     controller.tokenRefresher = tokenRefresher
     return controller
 }
+
+private var storedDao: PositionDao? = null
+
+/**
+ * Paid distance (km) of [tripId] from the persisted fixes, without a running tracker: the app
+ * reads it when the tracking service was stopped mid-trip (user, OEM or memory limiter), so the
+ * trip isn't completed as 0 km. Returns 0.0 when nothing is stored.
+ */
+suspend fun GpsFactory.storedTripDistanceKm(tripId: String): Double {
+    val dao = storedDao ?: createPositionDatabase().positionDao().also { storedDao = it }
+    return runCatching { paidDistanceKm(dao, tripId) }.getOrDefault(0.0)
+}

@@ -3,6 +3,8 @@ package io.github.saggeldi.gps
 import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
+import android.os.HandlerThread
+import android.os.Looper
 import android.os.SystemClock
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
@@ -28,6 +30,16 @@ class AndroidLocationProvider(
         LocationServices.getFusedLocationProviderClient(context)
     private val batteryProvider = AndroidBatteryProvider(context)
     private var locationCallback: LocationCallback? = null
+
+    /**
+     * Fixes are delivered here, not on the main looper: each one reads the battery and starts
+     * persistence work, which competed with the map and the Navigation SDK for main-thread time.
+     */
+    private val callbackThread: HandlerThread by lazy {
+        HandlerThread("yedu-location").apply { start() }
+    }
+    private val callbackLooper: Looper
+        get() = callbackThread.looper
 
     /**
      * Last heading Android actually knew, in degrees.
@@ -63,12 +75,13 @@ class AndroidLocationProvider(
         // faster than `interval` for [GpsTracker] to have anything to test those
         // triggers against — it can only filter fixes it is given.
         val intervalMs = if (config.distance > 0 || config.angle > 0) {
-            MINIMUM_INTERVAL_MS
+            config.fastestIntervalMillis.coerceIn(MINIMUM_INTERVAL_MS, config.interval * 1000)
         } else {
             config.interval * 1000
         }
 
         val request = LocationRequest.Builder(priority, intervalMs)
+            .setMaxUpdateDelayMillis(config.maxBatchDelayMillis.coerceAtLeast(0))
             // Accept an early fix rather than holding it back to the interval
             // boundary; GpsTracker applies the real rate limit and now allows a
             // small tolerance, so this is what keeps the cadence steady.
@@ -78,17 +91,20 @@ class AndroidLocationProvider(
 
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                val location = result.lastLocation ?: return
-                if (isLocationStale(location)) return
+                // A batch (maxBatchDelayMillis) carries several fixes, oldest first: send them
+                // all so the trail keeps its corners, skipping stale ones.
                 val battery = batteryProvider.getBatteryStatus()
-                onLocation(location.toPosition(config.deviceId, battery))
+                for (location in result.locations) {
+                    if (isLocationStale(location)) continue
+                    onLocation(location.toPosition(config.deviceId, battery))
+                }
             }
         }
         locationCallback = callback
 
         try {
             fusedClient.requestLocationUpdates(
-                request, callback, android.os.Looper.getMainLooper()
+                request, callback, callbackLooper
             ).addOnFailureListener { e ->
                 onError("Location provider error: ${e.message}")
             }
