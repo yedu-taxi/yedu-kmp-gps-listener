@@ -45,6 +45,26 @@ class TripTracker(private val timeProvider: () -> Long = ::currentTimeMillis) {
     var pauseDistanceThresholdMeters: Double = 2.0
     var pauseTimeThresholdSeconds: Long = 15L
 
+    // Distance filter. The billed distance is built from every raw fix (about one a second on a
+    // trip), so GPS noise around a standing car used to add up: a parked phone "drove" several km
+    // in a few minutes and the rider paid for it. A step only counts once the car is clearly away
+    // from the last counted point, poor fixes are skipped and impossible jumps are dropped.
+    /** Fixes with a reported accuracy worse than this are not used for distance. */
+    var maxAccuracyMeters: Double = 50.0
+    /** Smallest step that counts, so noise around a standing car never adds up. */
+    var minStepMeters: Double = 10.0
+    /**
+     * The step also has to clear both fixes' error circles (anchor accuracy + this fix's), up to
+     * this much: two fixes 8 m accurate can sit 16 m apart around a car that never moved.
+     */
+    var maxAccuracyStepMeters: Double = 50.0
+    /** A jump faster than this (about 250 km/h) is a bad fix, not driving. */
+    var maxSpeedMetersPerSecond: Double = 70.0
+    private var lastTime: Long = 0L
+    private var lastAccuracy: Double = 0.0
+    private var statusLastTime: Long = 0L
+    private var statusLastAccuracy: Double = 0.0
+
     // Listener
     private var listener: TripTrackerListener? = null
 
@@ -125,24 +145,52 @@ class TripTracker(private val timeProvider: () -> Long = ::currentTimeMillis) {
         val lat = position.latitude
         val lon = position.longitude
         val time = position.time
+        val accuracy = position.accuracy
 
-        // Update total trip distance
-        if (hasLastPosition) {
-            val dist = DistanceCalculator.distance(lastLat, lastLon, lat, lon)
-            tripDistanceMeters += dist
-        }
-        lastLat = lat
-        lastLon = lon
-        hasLastPosition = true
+        // 0 = accuracy not reported (tests, some providers): trust the fix.
+        if (accuracy <= 0.0 || accuracy <= maxAccuracyMeters) {
+            val fixError = maxOf(accuracy, 0.0)
+            fun minStep(anchorError: Double) =
+                maxOf(minStepMeters, minOf(anchorError + fixError, maxAccuracyStepMeters))
 
-        // Update per-status distance
-        if (hasStatusLastPosition) {
-            val dist = DistanceCalculator.distance(statusLastLat, statusLastLon, lat, lon)
-            statusDistanceMeters += dist
+            // Total trip distance: measured from the last counted point, not the last fix.
+            if (!hasLastPosition) {
+                lastLat = lat
+                lastLon = lon
+                lastTime = time
+                lastAccuracy = fixError
+                hasLastPosition = true
+            } else {
+                // null = still within noise; STEP_DROPPED = impossible jump (keep the anchor).
+                val step = countedStep(lastLat, lastLon, lastTime, lat, lon, time, minStep(lastAccuracy))
+                if (step != null && step != STEP_DROPPED) {
+                    tripDistanceMeters += step
+                    lastLat = lat
+                    lastLon = lon
+                    lastTime = time
+                    lastAccuracy = fixError
+                }
+            }
+
+            // Per-status distance, same rule from its own anchor.
+            if (!hasStatusLastPosition) {
+                statusLastLat = lat
+                statusLastLon = lon
+                statusLastTime = time
+                statusLastAccuracy = fixError
+                hasStatusLastPosition = true
+            } else {
+                val step =
+                    countedStep(statusLastLat, statusLastLon, statusLastTime, lat, lon, time, minStep(statusLastAccuracy))
+                if (step != null && step != STEP_DROPPED) {
+                    statusDistanceMeters += step
+                    statusLastLat = lat
+                    statusLastLon = lon
+                    statusLastTime = time
+                    statusLastAccuracy = fixError
+                }
+            }
         }
-        statusLastLat = lat
-        statusLastLon = lon
-        hasStatusLastPosition = true
 
         // Pause detection
         detectPauseOrResume(lat, lon, time)
@@ -241,6 +289,32 @@ class TripTracker(private val timeProvider: () -> Long = ::currentTimeMillis) {
                 listener?.onDriverPaused()
             }
         }
+    }
+
+    /**
+     * The distance to add for a move from the anchor to this fix: null while the car is still
+     * within [minStep] of the anchor (noise), [STEP_DROPPED] for a jump faster than
+     * [maxSpeedMetersPerSecond]. Fixes with no time between them skip the speed check.
+     */
+    private fun countedStep(
+        fromLat: Double,
+        fromLon: Double,
+        fromTime: Long,
+        lat: Double,
+        lon: Double,
+        time: Long,
+        minStep: Double,
+    ): Double? {
+        val dist = DistanceCalculator.distance(fromLat, fromLon, lat, lon)
+        if (dist < minStep) return null
+        val dtSeconds = (time - fromTime) / 1000.0
+        if (dtSeconds > 0 && dist / dtSeconds > maxSpeedMetersPerSecond) return STEP_DROPPED
+        return dist
+    }
+
+    private companion object {
+        /** Marker for a dropped jump (negative, so it is never a real distance). */
+        const val STEP_DROPPED = -1.0
     }
 
     private class StatusAccumulator(

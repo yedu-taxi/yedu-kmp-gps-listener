@@ -329,6 +329,7 @@ class TripTrackerTest {
     fun multiStatusAccumulation() {
         var fakeTime = 0L
         val tracker = TripTracker(timeProvider = { fakeTime })
+        tracker.maxSpeedMetersPerSecond = Double.MAX_VALUE // 111 km jumps test bookkeeping only
 
         fakeTime = 10_000L
         tracker.startTrip("t1", "accepted")
@@ -416,6 +417,7 @@ class TripTrackerTest {
     fun endTripFinalizesCurrentStatusInHistory() {
         var fakeTime = 0L
         val tracker = TripTracker(timeProvider = { fakeTime })
+        tracker.maxSpeedMetersPerSecond = Double.MAX_VALUE // 111 km jumps test bookkeeping only
         var endedStats: TripStats? = null
         tracker.setListener(object : TripTrackerListener {
             override fun onTripStatsUpdated(stats: TripStats) {}
@@ -950,5 +952,93 @@ class TripTrackerTest {
         assertFalse(tracker.isActive)
         tracker.startTrip("t1", "s1")
         assertTrue(tracker.isActive)
+    }
+
+    // ── GPS noise filter (billing) ──────────────────────────────────────
+
+    /** A fix [northM] / [eastM] metres from (40, -74) at second [sec] with [acc] m accuracy. */
+    private fun near(northM: Double, eastM: Double, sec: Int, acc: Double = 8.0) =
+        Position(
+            deviceId = "test",
+            time = 1_000_000L + sec * 1000L,
+            latitude = 40.0 + northM / 111_320.0,
+            longitude = -74.0 + eastM / (111_320.0 * kotlin.math.cos(kotlin.math.PI * 40.0 / 180.0)),
+            accuracy = acc,
+        )
+
+    @Test
+    fun parkedCarJitterDoesNotAddDistance() {
+        // 7 minutes parked, a fix every second jumping up to 9 m around the car: the old code
+        // summed every hop and billed kilometres for a car that never moved.
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        for (sec in 0 until 420) {
+            val n = ((sec * 37) % 11 - 5).toDouble() // within the 8 m accuracy circle
+            val e = ((sec * 53) % 11 - 5).toDouble()
+            tracker.updatePosition(near(n, e, sec))
+        }
+        assertTrue(tracker.getTripStats().totalDistanceMeters < 50.0, "jitter billed as distance")
+    }
+
+    @Test
+    fun indoorJitterWithPoorAccuracyDoesNotAddDistance() {
+        // Indoors: 25 m accuracy, fixes wandering up to 15 m around the phone.
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        for (sec in 0 until 420) {
+            val n = ((sec * 37) % 31 - 15).toDouble()
+            val e = ((sec * 53) % 29 - 14).toDouble()
+            tracker.updatePosition(near(n, e, sec, acc = 25.0))
+        }
+        assertTrue(tracker.getTripStats().totalDistanceMeters < 100.0, "indoor jitter billed as distance")
+    }
+
+    @Test
+    fun normalDrivingIsCountedFully() {
+        // 12 m/s for 2 minutes along a straight road = 1440 m.
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        for (sec in 0..120) tracker.updatePosition(near(sec * 12.0, 0.0, sec))
+        val meters = tracker.getTripStats().totalDistanceMeters
+        assertTrue(meters > 1400.0 && meters < 1460.0, "drove 1440 m, counted $meters")
+    }
+
+    @Test
+    fun slowDrivingStillCounts() {
+        // Traffic at 3 m/s: single steps are under the 10 m floor but the car keeps moving.
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        for (sec in 0..100) tracker.updatePosition(near(sec * 3.0, 0.0, sec, acc = 5.0))
+        val meters = tracker.getTripStats().totalDistanceMeters
+        assertTrue(meters > 280.0 && meters <= 300.0, "drove 300 m, counted $meters")
+    }
+
+    @Test
+    fun inaccurateFixesAreIgnored() {
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        tracker.updatePosition(near(0.0, 0.0, 0))
+        tracker.updatePosition(near(400.0, 0.0, 30, acc = 300.0)) // cell-tower fix
+        tracker.updatePosition(near(0.0, 3.0, 60))
+        assertTrue(tracker.getTripStats().totalDistanceMeters < 1.0)
+    }
+
+    @Test
+    fun impossibleJumpIsDropped() {
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        tracker.updatePosition(near(0.0, 0.0, 0))
+        tracker.updatePosition(near(2_000.0, 0.0, 1)) // 2 km in 1 s
+        tracker.updatePosition(near(10.0, 0.0, 2))
+        val meters = tracker.getTripStats().totalDistanceMeters
+        assertTrue(meters < 20.0, "a GPS spike was billed: $meters m")
+    }
+
+    @Test
+    fun statusDistanceUsesTheSameFilter() {
+        val tracker = TripTracker()
+        tracker.startTrip("trip-1", "in_progress")
+        for (sec in 0 until 120) tracker.updatePosition(near(((sec * 7) % 11 - 5).toDouble(), 0.0, sec))
+        assertTrue(tracker.getTripStats().statusDistanceKm < 0.05)
     }
 }
