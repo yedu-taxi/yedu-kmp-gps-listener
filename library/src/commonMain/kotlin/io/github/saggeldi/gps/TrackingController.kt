@@ -281,10 +281,7 @@ class TrackingController(
     // Running paid distance in metres behind `accumulated_km`, and the fix it was last
     // advanced from. Read/written only from [dbScope], which is single-threaded.
     private var paidTripId: String? = null
-    private var paidMeters = 0.0
-    private var lastPaidLat = 0.0
-    private var lastPaidLon = 0.0
-    private var hasLastPaid = false
+    private var paidMeter: PaidMeter? = null
 
     /**
      * Paid (`on_the_trip`) distance in km for the position just persisted.
@@ -301,24 +298,22 @@ class TrackingController(
             resetPaidKm()
             paidTripId = tripId
         }
-        if (tripId == null || position.tripStatus != PAID_STATUS) return paidMeters / 1000.0
-        if (hasLastPaid) {
-            paidMeters += DistanceCalculator.distance(
-                lastPaidLat, lastPaidLon, position.latitude, position.longitude
-            )
-        } else {
-            paidMeters = getTripDistanceKm(tripId) * 1000.0
+        if (tripId == null || position.tripStatus != PAID_STATUS) {
+            return (paidMeter?.meters ?: 0.0) / 1000.0
         }
-        lastPaidLat = position.latitude
-        lastPaidLon = position.longitude
-        hasLastPaid = true
-        return paidMeters / 1000.0
+        val meter = paidMeter
+        if (meter != null) {
+            meter.add(position.latitude, position.longitude, position.time, position.accuracy)
+            return meter.meters / 1000.0
+        }
+        // First paid fix of this process: the stored rows already include it.
+        val dao = positionDao ?: return 0.0
+        return paidMeter(dao, tripId).also { paidMeter = it }.meters / 1000.0
     }
 
     private fun resetPaidKm() {
         paidTripId = null
-        paidMeters = 0.0
-        hasLastPaid = false
+        paidMeter = null
     }
 
     private fun send(position: Position, totalKm: Double = 0.0, isAuthRetry: Boolean = false) {
@@ -452,16 +447,14 @@ class TrackingController(
     }
 }
 
-/** Sum of consecutive haversines over [tripId]'s paid (`on_the_trip`) fixes, in km. */
-internal suspend fun paidDistanceKm(dao: PositionDao, tripId: String): Double {
-    val positions = dao.getByTripAndStatus(tripId, "on_the_trip")
-    if (positions.size < 2) return 0.0
-    var totalMeters = 0.0
-    for (i in 1 until positions.size) {
-        totalMeters += DistanceCalculator.distance(
-            positions[i - 1].latitude, positions[i - 1].longitude,
-            positions[i].latitude, positions[i].longitude
-        )
+/** [tripId]'s paid (`on_the_trip`) fixes run through the billing filter. */
+internal suspend fun paidMeter(dao: PositionDao, tripId: String): PaidMeter =
+    PaidMeter().apply {
+        dao.getByTripAndStatus(tripId, "on_the_trip").forEach {
+            add(it.latitude, it.longitude, it.time, it.accuracy)
+        }
     }
-    return totalMeters / 1000.0
-}
+
+/** [tripId]'s paid distance in km. */
+internal suspend fun paidDistanceKm(dao: PositionDao, tripId: String): Double =
+    paidMeter(dao, tripId).meters / 1000.0

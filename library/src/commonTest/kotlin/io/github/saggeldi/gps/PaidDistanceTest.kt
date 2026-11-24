@@ -96,7 +96,7 @@ class PaidDistanceTest {
     private fun track(count: Int, startSecond: Long = 0): List<Position> = (0 until count).map { i ->
         Position(
             deviceId = "d",
-            time = (startSecond + i) * 1000L,
+            time = (startSecond + i) * 4000L, // ~28 m/s: the meter drops impossible speeds
             latitude = 37.0 + i * 0.001,
             longitude = 58.0
         )
